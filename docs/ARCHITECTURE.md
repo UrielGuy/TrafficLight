@@ -165,11 +165,11 @@ JSON everywhere. Errors: HTTP 4xx with `{"detail": "message"}`.
 | `POST /api/media` | multipart `file` (+ optional `name`) → `MediaItem` with `status: "processing"`; poll `GET /api/media/{id}` until `ready` or `error` |
 | `GET /api/media/{id}` | → `MediaItem` |
 | `PATCH /api/media/{id}` | `{"name"}` → `MediaItem` |
-| `DELETE /api/media/{id}` | → `{"ok": true}` (409 with the names of the sets that use it unless `?force=1`) |
+| `DELETE /api/media/{id}` | → `{"ok": true}`; if sets use it, 409 `{"detail": "Used by A, B", "sets": ["A", "B"]}` unless `?force=1` |
 | `GET /api/media/{id}/thumb.jpg` | a small still (video: a frame; audio: its waveform; image: itself) |
 | `GET /api/media/{id}/file` | the file for the browser to play in the library page (supports Range) |
 | `GET /api/media/{id}/peaks` | audio / video with sound: `{"rate": peaks per second, "peaks": [0..1,...]}` for drawing a waveform on the timeline |
-| `POST /api/media/{id}/show` | `{"target": "face0"\|"face1"\|"face2"\|"all"\|"faces", "loop": true}` → `{"ok": true}` — play just this video / image now (`faces` = the same on all three lights) |
+| `POST /api/media/{id}/show` | `{"target": "face0"\|"face1"\|"face2"\|"all"\|"faces", "loop": true}` → `{"ok": true}` — play just this item now, once, as an unsaved set (`faces` = the same on all three lights; length = the item's duration, 10 s for a still; `loop` is the clip's loop param; 409 if the item is not ready; `now.set_id` is null and `set_name` the item's name) |
 | `POST /api/media/{id}/make-set` | same body → `Set` — a new set containing just this item |
 | `GET /api/render.png?set={id}&t={seconds}` | one frame of a stored set as PNG (thumbnails) |
 
@@ -180,7 +180,7 @@ State = {
           "t": 12.3, "duration": 30.0, "paused": false},
   "schedule": {"default_set": "…" | null, "random_minutes": 6, "random_enabled": true,
                "random_in": 123.0 | null},          // seconds until a random set is due; null = n/a
-  "output": {"driver": "colorlight", "ok": true, "error": null, "interface": "…", "fps": 59.9},
+  "output": {"driver": "colorlight", "ok": true, "error": null, "interface": "…", "fps": 59.9, "render_ms": 1.2},
   "audio": {"ok": true, "error": null, "device": "…", "device_name": "…", "volume": 0.8, "voices": 1},
   "sets_rev": 12, "media_rev": 3,                  // bump when sets / media change: refetch
   "version": "0.1.0"
@@ -209,10 +209,21 @@ first (the first gets `{"type": "closed", "reason": "…"}`). Client → server:
 | `{"type": "live", "on": true}` | show the draft on the LEDs and speakers (default on) |
 
 Server → client: `{"type": "status", "t": 12.3, "playing": true, "live": true,
-"duration": 30, "problems": [{"clip_id", "track_id", "message"}]}` about ten
-times a second (and at once after every client message), and binary editor
-frames. The session ends when the socket closes; the sign returns to its
-schedule.
+"duration": 30, "loop": {"on": true, "from": 0, "to": 30},
+"problems": [{"clip_id", "track_id", "message"}]}` about ten times a second
+(and at once after every client message), `{"type": "error", "message"}` for
+a message it could not use, and binary editor frames. A session opens paused
+at t = 0 and live. `problems` holds each renderer's `validate()` results plus
+structural ones (unknown type, wrong target for the track, overlapping clips,
+zero length, a clip starting after the set ends). While a live session is
+open the sign's own clock is frozen; when the socket closes the session ends
+and the sign resumes its schedule where it was.
+
+Other rules the server follows: set ids are `[A-Za-z0-9_-]{1,64}`; `PUT
+/api/sets/{id}` creates the set if it does not exist; validation errors are
+422 with `detail` as a string; "show now" restarts the random interval when
+the shown set starts and un-pauses the sign; a test pattern wins over
+everything and silences the sound.
 
 ## Internal Python interfaces
 
