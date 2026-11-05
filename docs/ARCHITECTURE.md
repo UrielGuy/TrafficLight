@@ -145,7 +145,7 @@ JSON everywhere. Errors: HTTP 4xx with `{"detail": "message"}`.
 | Call | Body → Result |
 | --- | --- |
 | `GET /api/state` | → `State` (below) |
-| `GET /api/catalog` | → `{"clip_types": [ClipType], "fonts": [{"id","name"}], "figures": [{"id","name"}], "common": {"face": {...}, "all": {...}}}`; `ClipType` = `ClipRenderer.describe()` |
+| `GET /api/catalog` | → `{"clip_types": [ClipType]}`; `ClipType` = `ClipRenderer.describe()`: `{"type","label","category","targets","default_duration","description","params":[ParamSpec]}`. Fonts and figures are `select` params with their options listed |
 | `GET /api/sets` | → `[SetSummary]` in play order |
 | `POST /api/sets` | `Set` (id optional; `tracks` optional → default five tracks) → `Set` |
 | `GET /api/sets/{id}` | → `Set` |
@@ -213,6 +213,41 @@ Server → client: `{"type": "status", "t": 12.3, "playing": true, "live": true,
 times a second (and at once after every client message), and binary editor
 frames. The session ends when the socket closes; the sign returns to its
 schedule.
+
+## Internal Python interfaces
+
+Contracts in code: `render/base.py` (renderers), `output/base.py` (drivers),
+`audio/base.py` (audio engine). Two more that cross package borders:
+
+```python
+# trafficlight/media/library.py — implements render.base.MediaLookup
+class MediaLibrary:
+    def __init__(self, root: Path): ...        # root = data_dir() / "media"; loads what is there
+    rev: int                                    # grows on every change (add, status change, rename, delete)
+    def list(self) -> list[MediaItem]: ...      # newest first
+    def get(self, media_id: str) -> MediaItem | None: ...
+    def add(self, src: Path, name: str) -> MediaItem: ...
+        # `src` is a temp file holding the upload, with the original extension. It is moved into
+        # the library; returns at once with status "processing"; ingest runs on a background thread
+        # and ends with status "ready" or "error". ValueError for a file type it cannot take.
+    def rename(self, media_id: str, name: str) -> MediaItem: ...   # KeyError if unknown
+    def delete(self, media_id: str) -> None: ...                    # KeyError if unknown
+    def video_path(self, media_id) -> str | None: ...   # MediaLookup: the proxy the sign decodes
+    def image_path(self, media_id) -> str | None: ...
+    def audio_path(self, media_id) -> str | None: ...
+    def thumb_path(self, media_id) -> Path | None: ...  # thumb.jpg
+    def file_path(self, media_id) -> Path | None: ...   # what GET /api/media/{id}/file serves: playable in a browser
+    def peaks(self, media_id) -> dict | None: ...       # {"rate": float, "peaks": [0..1, ...]}
+    def wait_ready(self, media_id, timeout: float = 30) -> MediaItem: ...   # blocks until not "processing"
+    def close(self) -> None: ...
+
+# trafficlight/output/patterns.py
+def make(name: str) -> np.ndarray | None: ...
+    # a (384,128,3) test frame for "panels" | "white" | "red" | "green" | "blue" | "gradient"; None for unknown
+```
+
+The server owns every HTTP route, including `/api/media*` (it calls
+`MediaLibrary`).
 
 ## Files on disk (`data/`, override with `TRAFFICLIGHT_DATA`)
 
