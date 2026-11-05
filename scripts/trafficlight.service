@@ -1,0 +1,38 @@
+# Template: scripts/install_pi.sh fills in @USER@ and @REPO@ and installs it as
+# /etc/systemd/system/trafficlight.service. Edit this file, not the installed copy.
+[Unit]
+Description=TrafficLight show controller
+After=local-fs.target sound.target
+# Never give up restarting: nobody is there to start it by hand.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+# Raw Ethernet (AF_PACKET) needs CAP_NET_RAW. AmbientCapabilities= (systemd.exec(5)) hands
+# it to the unprivileged process across the exec of its interpreter, so nothing on disk
+# changes. setcap on .venv/bin/python would not do what it looks like: that file is a
+# symlink to /usr/bin/python3.x, setcap acts on the real interpreter, and every Python
+# program on the machine would get the capability. CAP_NET_ADMIN is optional: it only lets
+# the driver enlarge the socket send buffer past the kernel limit (SO_SNDBUFFORCE).
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=yes
+# Sound: talk to the sound card through ALSA directly. A system service has no desktop
+# session, hence no PipeWire/PulseAudio to connect to; the audio group grants /dev/snd
+# whatever groups the user has. (On a desktop image that is logged in, PipeWire may hold
+# the card open: use Raspberry Pi OS Lite, see README.)
+SupplementaryGroups=audio
+# /var/lib/trafficlight, owned by the service user, kept across updates of the code.
+StateDirectory=trafficlight
+Environment=TRAFFICLIGHT_DATA=/var/lib/trafficlight
+Environment=PYTHONUNBUFFERED=1
+# Protocol options for the Colorlight driver (docs/HARDWARE.md, section 8):
+#Environment=TRAFFICLIGHT_COLORLIGHT=sync_gap_ms=3
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/.venv/bin/python -m trafficlight --port 8080
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
