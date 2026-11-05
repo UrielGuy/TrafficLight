@@ -82,7 +82,7 @@ class OutputSettings(BaseModel):
     rotate180: bool = False            # whole sign upside down
     panel_order: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5])   # canvas panel (top..bottom) -> position in the card's image
     panel_flip: list[bool] = Field(default_factory=lambda: [False] * 6)          # panel mounted rotated 180 degrees
-    color_order: Literal["rgb", "rbg", "grb", "gbr", "brg", "bgr"] = "rgb"
+    color_order: Literal["rgb", "rbg", "grb", "gbr", "brg", "bgr"] = "bgr"   # byte order on the wire; open senders for this card use BGR
 
 
 class AudioSettings(BaseModel):
