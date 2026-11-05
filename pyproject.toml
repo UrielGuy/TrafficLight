@@ -1,0 +1,9 @@
+[project]
+name = "trafficlight"
+version = "0.1.0"
+description = "Show controller for a three-light LED sign on a Colorlight 5A-75B"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
