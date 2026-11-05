@@ -140,7 +140,7 @@ function MediaRow({ m, type }: { m: MediaItem; type: ClipType | undefined }) {
       onPointerDown={(e) => item && onItemPointerDown(e, item)} onClick={() => item && addItem(item)}
       style={{ ['--hue' as string]: categoryHue('media') }}>
       <span className="pal-thumb">
-        {m.status === 'ready' ? <img src={mediaThumbUrl(m.id)} alt="" loading="lazy" draggable={false} /> : m.status === 'processing' ? <span className="spinner small" /> : <span className="err">!</span>}
+        {m.status === 'ready' ? <img src={mediaThumbUrl(m.id, m.version)} alt="" loading="lazy" draggable={false} /> : m.status === 'processing' ? <span className="spinner small" /> : <span className="err">!</span>}
       </span>
       <span className="pal-media-text">
         <span className="ellipsis">{m.name}</span>

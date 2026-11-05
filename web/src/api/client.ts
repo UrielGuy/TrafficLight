@@ -1,7 +1,7 @@
 // Typed wrappers for every REST route in docs/ARCHITECTURE.md ("HTTP API").
 // Failures throw ApiError whose message is the server's `detail`.
 import type {
-  AudioDevice, Catalog, MediaItem, NetInterface, NewSet, Peaks, Problem, SetData, SetSummary,
+  AudioDevice, Catalog, MediaEdit, MediaImport, MediaItem, NetInterface, NewSet, Peaks, Problem, SetData, SetSummary,
   Settings, SettingsPatch, ShowTarget, State, TestPattern,
 } from './types';
 
@@ -88,6 +88,10 @@ export const api = {
   },
   getMedia: (id: string) => request<MediaItem>('GET', `/api/media/${enc(id)}`),
   renameMedia: (id: string, name: string) => request<MediaItem>('PATCH', `/api/media/${enc(id)}`, { name }),
+  /** A changed edit re-makes the prepared files: the item goes back to "processing" (the old result keeps playing). */
+  editMedia: (id: string, edit: MediaEdit) => request<MediaItem>('PATCH', `/api/media/${enc(id)}`, { edit }),
+  duplicateMedia: (id: string, name?: string) => request<MediaItem>('POST', `/api/media/${enc(id)}/duplicate`, name ? { name } : {}),
+  importMedia: (body: MediaImport) => request<MediaItem>('POST', '/api/media/import', body),
   /** Without `force` the server answers 409 (ApiError.status === 409) when sets use the item. */
   deleteMedia: (id: string, force = false) => request<Ok>('DELETE', `/api/media/${enc(id)}${force ? '?force=1' : ''}`),
   mediaPeaks: (id: string) => request<Peaks>('GET', `/api/media/${enc(id)}/peaks`),
@@ -98,8 +102,11 @@ export const api = {
 };
 
 // ---- URLs for <img>/<video>/<audio>
+/** `rev`: anything that changes when the thumbnail does (the item's `version`, or `media_rev`), so caches let go. */
 export const mediaThumbUrl = (id: string, rev?: number) => `/api/media/${enc(id)}/thumb.jpg${rev ? `?v=${rev}` : ''}`;
 export const mediaFileUrl = (id: string) => `/api/media/${enc(id)}/file`;
+/** The whole original picture for the crop tool (the original, or a browser copy of it). */
+export const mediaSourceUrl = (id: string) => `/api/media/${enc(id)}/source`;
 export const renderUrl = (setId: string, t = 0, rev?: number) =>
   `/api/render.png?set=${enc(setId)}&t=${t}${rev ? `&v=${rev}` : ''}`;
 

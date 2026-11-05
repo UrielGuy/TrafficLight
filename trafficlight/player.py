@@ -304,7 +304,8 @@ class Player:
             inst.future = None
         return inst.renderer
 
-    def _ctx(self, clip: Clip, t: float, box_h: int, face: Optional[int], wall: _dt.datetime) -> RenderContext:
+    def _ctx(self, clip: Clip, t: float, box_h: int, face: Optional[int], wall: _dt.datetime,
+             still: bool = False) -> RenderContext:
         s = self.set
         local = t - clip.start
         bpm = float(s.bpm)
@@ -312,7 +313,7 @@ class Player:
             t=local, clip_duration=clip.duration, set_time=t, bpm=bpm,
             beat=(t - s.beat_offset) * bpm / 60.0, clip_beat=local * bpm / 60.0,
             width=config.W, height=box_h, face=face, face_color=face_rgb(self.env.settings, face),
-            seed=self.clip_seed(clip), wall_time=wall)
+            seed=self.clip_seed(clip), wall_time=wall, still=still)
 
     # -- the frame
     def _window(self, t: Optional[float], audio: bool) -> list[Clip]:
@@ -332,7 +333,7 @@ class Player:
                 self._instance(c, now=False)
 
     def render(self, t: float, *, audio: bool = True, lookahead: Optional[float] = None,
-               wall_time: Optional[_dt.datetime] = None) -> tuple[np.ndarray, list[AudioCue]]:
+               wall_time: Optional[_dt.datetime] = None, still: bool = False) -> tuple[np.ndarray, list[AudioCue]]:
         """The sign at set time t: uint8 (H, W, 3) and the sounds that should play now.
         lookahead: the set time playback jumps to next (a loop back to the start), so the
         renderers needed there are kept or made ahead."""
@@ -362,7 +363,7 @@ class Player:
                 self._audio(r, clip, t, config.H, None, wall, cues)
                 continue
             y0, h, face = target_box(track.target)
-            ctx = self._ctx(clip, t, h, face, wall)
+            ctx = self._ctx(clip, t, h, face, wall, still)
             if audio:
                 self._audio(r, clip, t, h, face, wall, cues, ctx)
             k = fade_gain(clip, ctx.t)
@@ -433,7 +434,7 @@ def render_still(s: Set, t: float, env: RenderEnv) -> np.ndarray:
     """One frame of a set (thumbnails): a throwaway player."""
     p = Player(env, s, background_init=False, seed=0)
     try:
-        frame, _ = p.render(t, audio=False)
+        frame, _ = p.render(t, audio=False, still=True)
         return frame
     finally:
         p.close()

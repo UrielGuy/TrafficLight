@@ -51,6 +51,12 @@ def geometry(src_w: int, src_h: int, box_w: int, box_h: int, fit: str) -> tuple[
     return sw, sh, (sw - box_w) // 2, (sh - box_h) // 2
 
 
+def playable(m: Optional[MediaItem]) -> bool:
+    """Prepared files exist: the item is ready, or a changed edit is being applied while the previous
+    result still plays."""
+    return m is not None and (m.status == "ready" or (m.status == "processing" and m.version > 0))
+
+
 def lookup(env: RenderEnv, media_id: Any) -> Optional[MediaItem]:
     if env.media is None or not isinstance(media_id, str) or not media_id:
         return None
@@ -73,7 +79,7 @@ def media_problems(p: dict[str, Any], env: RenderEnv, kinds: tuple[str, ...], ne
         return [f"The {word} is no longer in the library"]
     if m.kind not in kinds:
         return [f'"{m.name}" is a {_KIND_WORD[m.kind]}, not a {word}']
-    if m.status == "processing":
+    if m.status == "processing" and not playable(m):
         return [f'"{m.name}" is still being processed']
     if m.status == "error":
         return [f'"{m.name}" could not be read: {m.error or "unknown error"}']

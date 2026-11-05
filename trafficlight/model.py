@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Target = Literal["face0", "face1", "face2", "all", "audio"]
 FACE_TARGETS = ("face0", "face1", "face2")
@@ -111,10 +111,30 @@ class MediaEdit(BaseModel):
     file is kept as uploaded, and changing the edit re-makes the proxy from it."""
     rotate: Literal[0, 90, 180, 270] = 0   # degrees clockwise, applied first
     crop: Optional[list[float]] = None     # [x, y, w, h] as fractions (0..1) of the rotated picture; None = all of it
-    start: float = 0.0                     # trim: seconds into the original
+    start: float = Field(0.0, ge=0)        # trim: seconds into the original (0 = its first picture)
     end: Optional[float] = None            # seconds into the original; None = to its end
     shape: Literal["free", "light", "sign"] = "free"   # what the crop was drawn for: one light (1:1), the whole
                                            # sign (1:3), or no fixed shape. A hint for the crop tool only.
+
+    @field_validator("crop")
+    @classmethod
+    def _crop_inside(cls, v: Optional[list[float]]) -> Optional[list[float]]:
+        if v is None:
+            return None
+        if len(v) != 4:
+            raise ValueError("crop is [x, y, w, h]")
+        x, y, w, h = (float(a) for a in v)
+        eps = 1e-6
+        if not (x >= -eps and y >= -eps and w > 0 and h > 0 and x + w <= 1 + eps and y + h <= 1 + eps):
+            raise ValueError("crop must lie inside the picture: 0 <= x, y and x + w, y + h <= 1")
+        x, y = max(0.0, x), max(0.0, y)
+        return [x, y, min(w, 1.0 - x), min(h, 1.0 - y)]
+
+    @model_validator(mode="after")
+    def _end_after_start(self) -> "MediaEdit":
+        if self.end is not None and self.end <= self.start:
+            raise ValueError("end must be after start")
+        return self
 
 
 class MediaItem(BaseModel):
@@ -122,7 +142,8 @@ class MediaItem(BaseModel):
     name: str
     kind: Literal["video", "image", "audio"]
     status: Literal["processing", "ready", "error"] = "processing"
-    error: Optional[str] = None
+    error: Optional[str] = None        # with status "error": why. With "ready": the last change of the edit
+                                       # failed (the previous result still plays and `edit` is back to it).
     duration: float = 0.0              # seconds (0 for a still image)
     width: int = 0
     height: int = 0
@@ -130,11 +151,16 @@ class MediaItem(BaseModel):
     has_audio: bool = False
     size: int = 0                      # bytes of the original file
     added: float = 0.0                 # unix time
-    # duration / width / height / fps above describe the item as prepared (after rotate, crop, trim).
+    # duration / width / height / fps / has_audio describe the item as prepared (after rotate, crop, trim; width
+    # and height in pixels of the original). While a changed edit is being applied they still describe the
+    # previous result, which keeps playing; they change together with `version`.
     edit: MediaEdit = Field(default_factory=MediaEdit)
+    version: int = 0                   # number of the prepared files in use (proxy, sound, thumbnail); grows each
+                                       # time they are re-made. 0 = nothing prepared yet.
     source_duration: float = 0.0       # the original: seconds,
     source_width: int = 0              # and display size before rotate and crop
     source_height: int = 0
     source_url: Optional[str] = None   # where it was imported from, if from a link
     progress: float = 0.0              # 0..1 while status is "processing"
-    stage: str = ""                    # what is happening while processing: "downloading", "converting", ...
+    stage: str = ""                    # what is happening while processing: "waiting", "downloading", "converting",
+                                       # "preparing the crop view"

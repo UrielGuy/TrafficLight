@@ -275,3 +275,64 @@ def test_audio_clip(env, media):
     assert A.natural_duration({"media": song.id}, env) == pytest.approx(3.0, abs=0.02)
     assert A.natural_duration({"media": song.id, "offset": 1}, env) == pytest.approx(2.0, abs=0.02)
     assert make(env, "audio", media="gone").audio(ctx(0)) is None
+
+
+# ------------------------------------------------------------------ a re-made crop while the clip plays
+def _is_red(out: np.ndarray) -> bool:
+    rgb = out[..., :3].astype(int)
+    return rgb[..., 0].mean() > 200 and rgb[..., 1].mean() < 60 and rgb[..., 2].mean() < 60
+
+
+def test_playing_clips_switch_to_a_re_made_crop(tmp_path, monkeypatch):
+    """The edit changes while a video, its sound and a picture play: they carry on without a gap and
+    take the new files as soon as those are complete; the old files are let go and removed."""
+    from trafficlight.media import library as library_mod
+    from trafficlight.model import MediaEdit
+    monkeypatch.setattr(library_mod, "_SWEEP_SECONDS", 0.1)
+    lib = MediaLibrary(tmp_path / "lib")
+    try:
+        vid = upload(lib, make_video(tmp_path / "count.mp4", w=SRC_W, h=SRC_H, n=N, fps=FPS, sound=True))
+        Image.fromarray(frame_picture(9, 300, 200)).save(tmp_path / "pic.png")
+        pic = upload(lib, tmp_path / "pic.png")
+        env = RenderEnv(settings=Settings(), media=lib)
+        v = make(env, "video", media=vid.id, fit="stretch")
+        snd = make(env, "audio", media=vid.id)
+        im = make(env, "image", media=pic.id, fit="stretch")
+        t = 0.2
+        out, _ = settle(v, ctx(t))
+        assert not _is_red(out) and not _is_red(im.render(ctx(t)))
+        old_dec, old_video = v._dec, lib.video_path(vid.id)
+        old_sound = snd.audio(ctx(t)).path
+        assert v.audio(ctx(t)).path == old_sound
+
+        red_bar = MediaEdit(crop=[0.0, 0.0, 0.08, 1.0])       # only the red bar on the left edge
+        lib.update(vid.id, edit=red_bar)
+        lib.update(pic.id, edit=red_bar)
+        # while the new files are made, the clips go on with the old ones
+        while lib.get(vid.id).status == "processing" or lib.get(pic.id).status == "processing":
+            t += 1 / 60
+            out = v.render(ctx(t))
+            assert out is not None and not _is_red(out)
+            time.sleep(0.002)
+        assert lib.get(vid.id).version == 2 and lib.get(pic.id).version == 2
+        end = time.monotonic() + 3
+        while True:
+            t += 1 / 60
+            out = v.render(ctx(t))
+            assert out is not None                              # never a gap on the way
+            if _is_red(out):
+                break
+            assert time.monotonic() < end, "the video never switched to the new crop"
+            time.sleep(0.002)
+        assert v._dec is not old_dec and old_dec.closed and v._dec.path == lib.video_path(vid.id) != old_video
+        assert v.audio(ctx(t)).path == lib.audio_path(vid.id) != old_sound
+        assert snd.audio(ctx(t)).path == lib.audio_path(vid.id)
+        assert _is_red(im.render(ctx(t)))
+        # nothing holds the old files any more: they go (on Windows too)
+        end = time.monotonic() + 5
+        while Path(old_video).parent.exists() and time.monotonic() < end:
+            time.sleep(0.05)
+        assert not Path(old_video).parent.exists()
+        v.close()
+    finally:
+        lib.close()

@@ -81,12 +81,29 @@ export type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? (T[K] exte
 export type SettingsPatch = DeepPartial<Settings>;
 
 export type MediaKind = 'video' | 'image' | 'audio';
+/** What the crop was drawn for: one light (1:1), the whole sign (1:3), or no fixed shape. */
+export type MediaShape = 'free' | 'light' | 'sign';
+/** How an item's original is prepared for the sign (never destructive). */
+export interface MediaEdit {
+  /** Degrees clockwise, applied first. */
+  rotate: 0 | 90 | 180 | 270;
+  /** [x, y, w, h] as fractions (0..1) of the rotated picture; null = all of it. */
+  crop: [number, number, number, number] | null;
+  /** Trim: seconds from the original's first picture. */
+  start: number;
+  /** null = to the end. */
+  end: number | null;
+  shape: MediaShape;
+}
 export interface MediaItem {
   id: string;
   name: string;
   kind: MediaKind;
   status: 'processing' | 'ready' | 'error';
+  /** With status "error": why. With "ready": the last change of the edit failed (the previous result still plays). */
   error: string | null;
+  /** duration / width / height / fps / has_audio describe the prepared result (after rotate, crop, trim; size in
+   * pixels of the original). While a new edit is applied they still describe the previous result. */
   duration: number;
   width: number;
   height: number;
@@ -94,6 +111,26 @@ export interface MediaItem {
   has_audio: boolean;
   size: number;
   added: number;
+  edit: MediaEdit;
+  /** Number of the prepared files in use; grows each time they are re-made (0 = none yet). */
+  version: number;
+  source_duration: number;
+  source_width: number;
+  source_height: number;
+  source_url: string | null;
+  /** 0..1 while processing. */
+  progress: number;
+  /** While processing: "waiting", "downloading", "converting", "preparing the crop view". */
+  stage: string;
+}
+/** Body of POST /api/media/import. */
+export interface MediaImport {
+  url: string;
+  /** The "1080" of 1080p (shorter side). */
+  max_height?: number;
+  start?: number;
+  duration?: number | null;
+  name?: string | null;
 }
 
 export type ParamKind = 'string' | 'text' | 'number' | 'int' | 'bool' | 'select' | 'color' | 'media' | 'font';

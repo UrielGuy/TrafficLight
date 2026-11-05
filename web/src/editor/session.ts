@@ -91,7 +91,8 @@ export class EditorSession {
   }
 
   private connect() {
-    this.sock = connectSocket('/ws/editor?fps=30', {
+    // live=0 when Live is off: the session must not take the LEDs over even until our first message
+    this.sock = connectSocket(() => `/ws/editor?fps=30&live=${sessionStore.get().live ? 1 : 0}`, {
       onOpen: () => {
         sessionStore.set((s) => ({ ...s, connected: true }));
         this.sendLive();

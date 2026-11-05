@@ -352,9 +352,11 @@ class Engine:
             self._test = frame
             self._test_name = None if frame is None else name
 
-    def open_editor(self) -> EditorSession:
-        """A new editor session; an open one is closed (its socket sees closed_reason)."""
+    def open_editor(self, live: bool = True) -> EditorSession:
+        """A new editor session; an open one is closed (its socket sees closed_reason). `live` is the
+        session's first state, so a client that had Live off never takes over the sign, not even briefly."""
         s = EditorSession(self)
+        s.live = bool(live)
         with self._lock:
             if self._editor is not None:
                 self._editor.closed_reason = "Another editor was opened"

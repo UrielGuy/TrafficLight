@@ -6,3 +6,4 @@ pillow>=10.3
 av>=13.0
 sounddevice>=0.4.7
 python-multipart>=0.0.9
+yt-dlp>=2025.10

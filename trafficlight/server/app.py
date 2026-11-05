@@ -27,7 +27,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from .. import __version__, config
 from ..audio.base import AudioEngine, create_audio_engine
 from ..engine import Engine, EditorSession, encode_png
-from ..model import Clip, MediaItem, Set, default_tracks
+from ..model import Clip, MediaEdit, MediaItem, Set, default_tracks
 from ..output.base import create_driver, list_interfaces
 from ..player import render_still, validate_set
 from ..store import SetExists, Store, valid_id
@@ -301,15 +301,64 @@ def create_app(data_dir: Optional[Path] = None, *, store: Optional[Store] = None
     def get_media(media_id: str) -> dict:
         return media_item(media_id).model_dump()
 
-    @app.patch("/api/media/{media_id}")
-    def rename_media(media_id: str, body: dict = Body(...)) -> dict:
-        name = body.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise HTTPException(422, "name: a non-empty string")
+    @app.post("/api/media/import")
+    def import_media(body: dict = Body(...)) -> dict:
+        lib = need_media()
+        url = body.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise HTTPException(422, "url: a web link")
         try:
-            return need_media().rename(media_id, name.strip()).model_dump()
+            max_height = int(body.get("max_height") or 1080)
+            start = float(body.get("start") or 0.0)
+            duration = body.get("duration")
+            duration = None if duration in (None, "") else float(duration)
+        except (TypeError, ValueError):
+            raise HTTPException(422, "max_height, start and duration are numbers")
+        if not 144 <= max_height <= 4320 or start < 0 or (duration is not None and duration <= 0):
+            raise HTTPException(422, "max_height: 144..4320, start >= 0, duration > 0")
+        name = body.get("name") if isinstance(body.get("name"), str) else None
+        try:
+            return lib.import_url(url, max_height=max_height, start=start, duration=duration, name=name).model_dump()
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.patch("/api/media/{media_id}")
+    def patch_media(media_id: str, body: dict = Body(...)) -> dict:
+        name = body.get("name")
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            raise HTTPException(422, "name: a non-empty string")
+        edit = None
+        if body.get("edit") is not None:
+            try:
+                edit = MediaEdit.model_validate(body["edit"])
+            except ValidationError as e:
+                raise HTTPException(422, "edit: " + _problem(e))
+        if name is None and edit is None:
+            raise HTTPException(422, "Nothing to change: give name and / or edit")
+        try:
+            return need_media().update(media_id, name=name, edit=edit).model_dump()
         except KeyError:
             raise HTTPException(404, "No such media item")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.post("/api/media/{media_id}/duplicate")
+    def duplicate_media(media_id: str, body: Optional[dict] = Body(None)) -> dict:
+        name = (body or {}).get("name")
+        try:
+            return need_media().duplicate(media_id, name if isinstance(name, str) else None).model_dump()
+        except KeyError:
+            raise HTTPException(404, "No such media item")
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/api/media/{media_id}/source")
+    def media_source(media_id: str):
+        media_item(media_id)
+        p = need_media().source_path(media_id)
+        if p is None or not Path(p).is_file():
+            raise HTTPException(404, "No picture to crop (yet)")
+        return FileResponse(p, headers={"Cache-Control": "no-cache"})
 
     @app.delete("/api/media/{media_id}")
     def delete_media(media_id: str, force: bool = Query(False)):
@@ -348,7 +397,7 @@ def create_app(data_dir: Optional[Path] = None, *, store: Optional[Store] = None
 
     def _media_body_set(media_id: str, body: Optional[dict]) -> Set:
         item = media_item(media_id)
-        if item.status != "ready":
+        if item.status != "ready" and not (item.status == "processing" and item.version > 0):
             raise HTTPException(409, "The item is still processing" if item.status == "processing"
                                 else f"The item could not be processed: {item.error or 'error'}")
         body = body or {}
@@ -401,8 +450,9 @@ def create_app(data_dir: Optional[Path] = None, *, store: Optional[Store] = None
     @app.websocket("/ws/editor")
     async def ws_editor(ws: WebSocket):
         fps = _socket_fps(ws, 30)
+        live = ws.query_params.get("live", "1").strip().lower() not in ("0", "false", "no", "off")
         await ws.accept()
-        session = engine.open_editor()
+        session = engine.open_editor(live=live)
         send = _Sender(ws)
 
         async def produce():

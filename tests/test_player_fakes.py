@@ -237,6 +237,14 @@ class FakeMedia:
         self.rev += 1
         return self.items[media_id]
 
+    def update(self, media_id, name=None, edit=None):
+        if media_id not in self.items:
+            raise KeyError(media_id)
+        upd = {k: v for k, v in (("name", name), ("edit", edit)) if v is not None}
+        self.items[media_id] = self.items[media_id].model_copy(update=upd)
+        self.rev += 1
+        return self.items[media_id]
+
     def delete(self, media_id):
         if media_id not in self.items:
             raise KeyError(media_id)

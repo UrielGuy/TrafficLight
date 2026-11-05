@@ -3,6 +3,7 @@
 // is selected. Every change applies at once (draft -> preview).
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { mediaThumbUrl } from '../api/client';
+import { editNote, openCropTool } from '../media/CropTool';
 import type { Clip, ClipType, MediaItem, ParamSpec, SetData, Target } from '../api/types';
 import { Toggle } from '../components/ui';
 import { useCatalog, useMedia, useSettings } from '../state/app';
@@ -81,7 +82,7 @@ function MediaSelect({ spec, value, onChange, media }: { spec: ParamSpec; value:
   const cur = items.find((m) => m.id === value);
   return (
     <div className="mediactl">
-      {cur && cur.status === 'ready' && <img src={mediaThumbUrl(cur.id)} alt="" />}
+      {cur && cur.version > 0 && <img src={mediaThumbUrl(cur.id, cur.version)} alt="" />}
       <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={spec.label}>
         <option value="">— choose {spec.media_kind ?? 'media'} —</option>
         {value && !cur && <option value={value}>Missing item ({value})</option>}
@@ -177,6 +178,21 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
   }, { key: `${clip.id}:duration` });
   const beats = clip.duration / secondsPerBeat(bpm);
 
+  // the crop tool for the clip's video or picture; when the new crop is ready, a clip that ran for the
+  // whole of the old one follows the new length
+  const mediaItem = (clip.type === 'video' || clip.type === 'image') && typeof clip.params.media === 'string'
+    ? media.find((m) => m.id === clip.params.media) : undefined;
+  const canCrop = !!mediaItem && mediaItem.kind === clip.type && mediaItem.version > 0;
+  const cropMedia = () => {
+    if (!mediaItem) return;
+    const speed = Number(clip.params.speed ?? 1) || 1;
+    const offset = Number(clip.params.offset ?? 0) || 0;
+    const followed = clip.type === 'video' && Math.abs(clip.duration - Math.max(0, mediaItem.duration - offset) / speed) < 0.05;
+    openCropTool(mediaItem, (m) => {
+      if (followed && m.duration > 0) setDuration(Math.max(0.1, Math.max(0, m.duration - offset) / speed));
+    });
+  };
+
   return (
     <div className="insp">
       <div className="insp-head" style={{ ['--hue' as string]: categoryHue(type?.category ?? '') }}>
@@ -198,6 +214,12 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
           {type.params.map((spec) => (
             <ParamControl key={spec.key} spec={spec} value={clip.params[spec.key]} onChange={(v) => setParam(spec.key, v)} faceColor={faceColor} media={media} />
           ))}
+          {canCrop && (
+            <div className="insp-crop">
+              <button onClick={cropMedia} data-testid="insp-crop">Crop &amp; trim…</button>
+              <span className="muted small">{mediaItem!.status === 'processing' ? 'Making the new crop…' : editNote(mediaItem!) ?? 'Whole picture'}</span>
+            </div>
+          )}
         </section>
       )}
       <section className="insp-section">

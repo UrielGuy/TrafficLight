@@ -6,6 +6,7 @@ import SetsPage from './pages/Sets';
 import MediaPage from './pages/Media';
 import SettingsPage from './pages/Settings';
 import Editor from './editor/Editor';
+import { CropHost } from './media/CropTool';
 
 const NAV = [
   { to: '/', label: 'Dashboard', end: true },
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      <CropHost />
       <Toasts />
       <ConfirmHost />
     </div>

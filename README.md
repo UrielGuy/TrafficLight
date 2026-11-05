@@ -88,6 +88,12 @@ Sets, settings and media live in a data directory:
 To back up the Pi: `ssh pi@host "sudo tar -C /var/lib -cz trafficlight" > trafficlight-data.tgz`.
 Do not restore over a running service: `sudo systemctl stop trafficlight` first.
 
+Media keeps every upload or download as it came (`media/<id>/original.*`); crops and trims made in
+the crop tool only change what the sign plays, never the original. Importing from a link (Media
+page) needs internet and uses yt-dlp; when a site changes and imports start failing, update it
+(`pip install -U yt-dlp` in the venv, or run the setup / update script again). Better import the
+videos before the trip: the sign plays from its library offline.
+
 ## Tests
 
 ```

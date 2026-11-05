@@ -71,13 +71,19 @@ class Picture(ClipRenderer):
 
     def render(self, ctx: RenderContext) -> Optional[np.ndarray]:
         try:
+            mid = self.p.get("media")
+            if self.env.media is None or not isinstance(mid, str) or not mid:
+                return None
+            # Asked every frame: a re-made crop has a new path and shows from the next frame on.
+            path = self.env.media.image_path(mid)
+            if path is not None and path != self._path:
+                try:
+                    _scaled(path, ctx.width, ctx.height, fit_of(self.p))
+                    self._path = path
+                except OSError:
+                    pass                 # not readable yet: keep showing the previous picture
             if self._path is None:
-                mid = self.p.get("media")
-                if self.env.media is None or not isinstance(mid, str) or not mid:
-                    return None
-                self._path = self.env.media.image_path(mid)
-                if self._path is None:
-                    return None
+                return None
             return _scaled(self._path, ctx.width, ctx.height, fit_of(self.p)).copy()
         except Exception:
             if not self._failed:

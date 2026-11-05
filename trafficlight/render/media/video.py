@@ -5,6 +5,11 @@ about to show (the current one and a short look-ahead, wrapping round at a loop)
 box size. render() picks the frame for its time from that buffer; when it is not there yet (a jump,
 a slow machine) it shows the last frame it showed instead of waiting. The proxy has a constant
 frame rate (media/ingest.py), so frame n is at n / fps and seeking is arithmetic.
+
+When the item's edit is re-made while the clip plays, the library starts handing out a new proxy path
+(media/library.py). render() asks for the path every frame; on a change it opens a second decoder on
+the new file and keeps showing the old one until the new one has the frame for the current time,
+then closes the old decoder, which lets go of the old file (Windows cannot delete it before).
 """
 from __future__ import annotations
 
@@ -18,13 +23,14 @@ import numpy as np
 from av.video.reformatter import VideoReformatter
 
 from ..base import AudioCue, ClipRenderer, ParamSpec, RenderContext, RenderEnv, register
-from .common import FIT_PARAM, fit_of, geometry, lookup, media_problems, number
+from .common import FIT_PARAM, fit_of, geometry, lookup, media_problems, number, playable
 
 log = logging.getLogger(__name__)
 
 LOOKAHEAD_SECONDS = 0.15     # frames decoded ahead of the play position (times the speed)
 MAX_AHEAD = 48
 FIRST_FRAME_WAIT = 0.004     # the only wait on the render thread: a clip's very first frame
+STILL_WAIT = 3.0             # a one-off still (RenderContext.still) waits for its frame
 SEEK_SECONDS = 0.5           # a forward jump shorter than this decodes through (the proxy's GOP)
 
 
@@ -211,6 +217,7 @@ class Video(ClipRenderer):
         super().__init__(params, env)
         self._item = None
         self._dec: Optional[_Decoder] = None
+        self._next: Optional[tuple[_Decoder, Any]] = None     # (decoder, item) of a re-made proxy, until it delivers
         self._last: Optional[np.ndarray] = None
         self._want_idx: Optional[int] = None
         self._failed = False
@@ -237,7 +244,7 @@ class Video(ClipRenderer):
     def _ready_item(self):
         if self._item is None:
             m = lookup(self.env, self.p.get("media"))
-            if m is not None and m.status == "ready" and m.kind == "video" and m.fps > 0:
+            if playable(m) and m.kind == "video" and m.fps > 0:
                 self._item = m
         return self._item
 
@@ -263,15 +270,51 @@ class Video(ClipRenderer):
                 log.exception("video clip failed to render")
             return None if self._last is None else self._last.copy()
 
+    def _follow(self, ctx: RenderContext) -> Optional[np.ndarray]:
+        """Notice a re-made proxy and switch to it once it can show the current frame; that frame, or
+        None while the old decoder still has to stand in."""
+        path = self.env.media.video_path(self._item.id)
+        if self._next is None:
+            if path is None or path == self._dec.path:
+                return None
+            m = lookup(self.env, self._item.id)
+            if not playable(m) or m.kind != "video" or m.fps <= 0:
+                return None
+            self._next = (_Decoder(path, m.fps, max(1, round(m.duration * m.fps))), m)
+        dec, m = self._next
+        if path is not None and path != dec.path:
+            dec.close()                    # superseded again before it was shown
+            self._next = None
+            return None
+        dec.configure((ctx.width, ctx.height), fit_of(self.p))
+        i, want = self._wanted(ctx.t, dec.n, m.fps)
+        dec.request(want)
+        arr = dec.get(i)
+        if arr is None:
+            if dec.error is None:
+                return None
+            dec.close()                    # the new file cannot be read: stay with the old one
+            self._next = None
+            return None
+        self._dec.close()
+        self._dec, self._item, self._next = dec, m, None
+        self._want_idx = i
+        return arr
+
     def _render(self, ctx: RenderContext) -> Optional[np.ndarray]:
         dec = self._start(ctx.t)
         if dec is None:
             return None
+        switched = self._follow(ctx)
+        if switched is not None:
+            self.stats["calls"] += 1
+            self._last = switched
+            return switched.copy()
         if dec.configure((ctx.width, ctx.height), fit_of(self.p)):
             self._last = None
         i, want = self._wanted(ctx.t, dec.n, self._item.fps)
         dec.request(want)
-        arr = dec.get(i, FIRST_FRAME_WAIT if self._last is None else 0.0)
+        arr = dec.get(i, (STILL_WAIT if ctx.still else FIRST_FRAME_WAIT) if self._last is None else 0.0)
         self.stats["calls"] += 1
         if arr is None:
             self.stats["late"] += 1
@@ -300,6 +343,9 @@ class Video(ClipRenderer):
         return AudioCue(key="", path=path, position=mt, gain=number(self.p, "volume", 1.0, 0.0, 1.0))
 
     def close(self) -> None:
+        if self._next is not None:
+            self._next[0].close()
+            self._next = None
         if self._dec is not None:
             self._dec.close()
             self._dec = None

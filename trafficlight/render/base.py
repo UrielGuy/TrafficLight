@@ -89,6 +89,8 @@ class RenderContext:
     face_color: tuple[int, int, int]   # this light's own colour (white on an "all" track)
     seed: int = 0                  # stable while this clip plays once; differs on the next pass (random colours)
     wall_time: _dt.datetime = field(default_factory=_dt.datetime.now)   # local time, for real clocks
+    still: bool = False            # a one-off picture (/api/render.png, thumbnails), not live playback: take the
+                                   # time to be exact (wait for a decoder's frame) instead of drawing a stand-in
 
 
 @dataclass

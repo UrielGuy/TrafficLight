@@ -93,7 +93,7 @@ export const ClipView = memo(function ClipView({ clip, pps, selected, problems, 
   const w = Math.max(3, clip.duration * pps);
   const hue = categoryHue(type?.category ?? 'unknown');
   const mediaId = typeof clip.params.media === 'string' && clip.params.media ? clip.params.media : null;
-  const showThumb = !!media && media.status === 'ready' && (media.kind === 'video' || media.kind === 'image');
+  const showThumb = !!media && media.version > 0 && (media.kind === 'video' || media.kind === 'image');
   const sounding = !!media && media.status === 'ready' && media.has_audio && (media.kind === 'audio' || clip.params.sound !== false);
   const summary = clipSummary(clip, type, media ? new Map([[media.id, media]]) : new Map());
   const sw = swatch(clip, type, trackColor);
@@ -109,7 +109,7 @@ export const ClipView = memo(function ClipView({ clip, pps, selected, problems, 
   return (
     <div className={cls} data-clip={ghost ? undefined : clip.id} data-type={clip.type} style={style}
       title={problems?.length ? problems.join('\n') : undefined}>
-      {showThumb && <div className="clip-thumb" style={{ backgroundImage: `url(${mediaThumbUrl(media!.id)})` }} />}
+      {showThumb && <div className="clip-thumb" style={{ backgroundImage: `url(${mediaThumbUrl(media!.id, media!.version)})` }} />}
       {sounding && mediaId && <Waveform mediaId={mediaId} clip={clip} mediaDuration={media!.duration} loop={clip.params.loop === true} />}
       {clip.fade_in > 0 && <div className="clip-fade in" style={{ width: Math.min(w, clip.fade_in * pps) }} />}
       {clip.fade_out > 0 && <div className="clip-fade out" style={{ width: Math.min(w, clip.fade_out * pps) }} />}

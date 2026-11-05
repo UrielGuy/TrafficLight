@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..base import AudioCue, ClipRenderer, ParamSpec, RenderContext, RenderEnv, register
-from .common import lookup, media_problems, number
+from .common import lookup, media_problems, number, playable
 
 
 @register
@@ -28,13 +28,18 @@ class Sound(ClipRenderer):
         self._src: Optional[tuple[str, float]] = None      # (audio file, its duration)
 
     def _source(self) -> Optional[tuple[str, float]]:
-        if self._src is None:
-            m = lookup(self.env, self.p.get("media"))
-            if m is None or m.status != "ready" or not m.has_audio or m.duration <= 0:
-                return None
-            path = self.env.media.audio_path(m.id)
-            if path is None:
-                return None
+        mid = self.p.get("media")
+        if self.env.media is None or not isinstance(mid, str) or not mid:
+            return None
+        # Asked every frame (a dictionary lookup): when the item's edit is re-made, the path changes and
+        # the sound switches to the new file without the clip being restarted.
+        path = self.env.media.audio_path(mid)
+        if path is None:
+            return self._src
+        if self._src is None or self._src[0] != path:
+            m = lookup(self.env, mid)
+            if not playable(m) or not m.has_audio or m.duration <= 0:
+                return self._src
             self._src = (path, m.duration)
         return self._src
 

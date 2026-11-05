@@ -20,8 +20,9 @@ export function wsUrl(path: string): string {
   return `${proto}//${location.host}${path}`;
 }
 
-/** Opens `path` (e.g. "/ws/sign?fps=20") and keeps it open, retrying with a growing delay (max 5 s). */
-export function connectSocket(path: string, h: SocketHandlers): Socket {
+/** Opens `path` (e.g. "/ws/sign?fps=20") and keeps it open, retrying with a growing delay (max 5 s).
+ * `path` may be a function: it is asked again at every (re)connect. */
+export function connectSocket(path: string | (() => string), h: SocketHandlers): Socket {
   let ws: WebSocket | null = null;
   let stopped = false;
   let delay = 500;
@@ -29,7 +30,7 @@ export function connectSocket(path: string, h: SocketHandlers): Socket {
   let connected = false;
 
   const open = () => {
-    ws = new WebSocket(wsUrl(path));
+    ws = new WebSocket(wsUrl(typeof path === 'function' ? path() : path));
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       delay = 500;

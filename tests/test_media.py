@@ -146,6 +146,8 @@ def test_proxy_size_rules():
     assert proxy_size(1080, 1920) == (216, 384)
     assert proxy_size(160, 90) == (160, 90)                  # never upscaled
     assert proxy_size(4000, 100) == (4000, 100)
+    # an exact 1:3 crop (as the crop tool rounds it) gives exactly the sign's box, both ways of rounding
+    assert proxy_size(854 / 3, 854) == (128, 384) and proxy_size(0.593056 * 480, 854) == (128, 384)
     w, h = proxy_size(1280, 720)
     assert w >= config.W and h >= config.H and w % 2 == 0 and h % 2 == 0
 
@@ -191,7 +193,7 @@ def test_video_proxy_caps_frame_rate_and_converts_for_browser(lib, tmp_path):
     info = stream_info(lib.video_path(m.id))
     assert info["rate"] == 60 and info["keyframes"][:2] == [0, 30]
     assert info["size"] == (192, 384)
-    assert lib.file_path(m.id).name == "proxy.mp4"            # MPEG-4 part 2 in MKV: not for a browser
+    assert lib.file_path(m.id).name == "source.mp4"           # MPEG-4 part 2 in MKV: not for a browser
     assert lib.audio_path(m.id) is None and lib.peaks(m.id) is None
 
 
@@ -221,7 +223,7 @@ def test_animation_is_a_video(lib, tmp_path, ext):
     assert m.kind == "video" and m.fps == 20 and m.duration == pytest.approx(0.4, abs=0.01)
     info = stream_info(lib.video_path(m.id))
     assert info["frames"] == 8
-    assert lib.file_path(m.id).name == "proxy.mp4"
+    assert lib.file_path(m.id).name == "source.mp4"           # a browser cannot seek in a GIF
 
 
 def test_image_keeps_alpha_and_is_scaled(lib, tmp_path):

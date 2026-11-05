@@ -39,7 +39,9 @@ web UI (React)  --REST + WebSocket-->  server (FastAPI)
 | `trafficlight/render/basic/` | `light`, `text`, `figure` renderers; text layout; fonts; sprites. |
 | `trafficlight/render/fx/` | Beat animations (`fx:*`) and the clock. |
 | `trafficlight/render/media/` | `video`, `image`, `audio` clip types. |
-| `trafficlight/media/library.py` | Uploads, proxies, thumbnails; implements `MediaLookup`. |
+| `trafficlight/media/library.py` | Uploads, link imports, edits, proxies, thumbnails; implements `MediaLookup`. |
+| `trafficlight/media/ingest.py` | Original -> prepared files (PyAV, Pillow): rotate, crop, trim, proxy, sound, thumbnail. |
+| `trafficlight/media/download.py` | Fetching a link with yt-dlp (as a library) and merging picture and sound with PyAV. |
 | `trafficlight/audio/` | `AudioEngine` contract (`base.py`) and the sounddevice mixer (`engine.py`). |
 | `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver, panel mapping. |
 | `trafficlight/store.py` | Sets and settings on disk. |
@@ -129,6 +131,38 @@ because that is what a light really shows. A crop made for one light can
 still be placed on the whole sign and the other way round: the clip's `fit`
 decides how it fills the box.
 
+Coordinates: the crop is `[x, y, w, h]` in fractions of the picture after the
+rotation; trim times are seconds from the original's first picture. Width
+and height of the result are in pixels of the original (a 1:1 crop of a
+1080p video is about 1080×1080); the proxy is then made just big enough to
+cover the sign.
+
+**Changing the edit while the item plays.** The prepared files of each
+version live in their own folder (`v<N>/`, `MediaItem.version`); a new edit
+is prepared into `v<N+1>/` while `v<N>/` stays untouched and in use (the item
+reports `processing`, with `duration` etc. still describing `v<N>`). When the
+new files are complete the version moves in one step; a playing clip sees
+the new path on its next frame, decodes the new proxy alongside the old one
+and switches as soon as the new one has the frame for the current time (no
+restart of the clip, the set or the server); its sound switches at the same
+moment. The old folder is then deleted, retried every few seconds until no
+reader holds a file open (Windows cannot delete an open file). Nothing is
+ever renamed or replaced in place. A newer edit cancels one still being
+prepared. If preparing fails while an earlier result exists, the item stays
+`ready` with its previous `edit` and `error` says what went wrong.
+
+**Link imports.** `yt-dlp` (used as a library; there is no ffmpeg executable)
+only finds the streams. The best picture up to `max_height` (H.264 first) and
+the best sound (Opus first: YouTube's AAC decodes ~35 ms late, Opus within
+2 ms, measured on flash-and-beep test clips) are fetched as two files over
+HTTP range requests (or yt-dlp's own downloader for HLS / DASH fragments),
+then copied packet for packet into one MP4 (or WebM / MKV) with PyAV: that
+is the original, nothing re-encoded, picture and sound in step as the site
+served them. `start` / `duration` fetch only about that much of the file,
+keep it from the keyframe before `start`, and become the item's initial
+trim (which can be widened later only within what was fetched). A link to
+a plain media file (a picture, a GIF, a video) is fetched as it is.
+
 ## Schedule
 
 `Settings.schedule.default_set` is the set the sign loops. When it ends and
@@ -181,11 +215,11 @@ JSON everywhere. Errors: HTTP 4xx with `{"detail": "message"}`.
 | `POST /api/output/test` | `{"pattern": "off" \| "panels" \| "white" \| "red" \| "green" \| "blue" \| "gradient"}` → `{"ok": true}`; a test picture replaces the show until `"off"` (panels = each panel in its own colour with its number, to check the mapping) |
 | `GET /api/media` | → `[MediaItem]` |
 | `POST /api/media` | multipart `file` (+ optional `name`) → `MediaItem` with `status: "processing"`; poll `GET /api/media/{id}` until `ready` or `error` |
-| `POST /api/media/import` | `{"url": "https://…", "max_height": 1080, "start": 0, "duration": null}` (all but `url` optional) → `MediaItem` with `status: "processing"`, `stage: "downloading"` — fetch a video from a link (YouTube and whatever else yt-dlp handles, or a direct file URL) into the library, picture and sound |
-| `GET /api/media/{id}` | → `MediaItem` (`progress` 0..1 and `stage` while processing) |
-| `PATCH /api/media/{id}` | `{"name"?, "edit"?: MediaEdit}` → `MediaItem`; a changed `edit` re-makes the proxy from the original (`status` goes back to `processing`; the old proxy keeps playing until the new one is ready, then every set using the item shows the new crop) |
-| `POST /api/media/{id}/duplicate` | `{"name"?}` → `MediaItem` — a second item from the same original (for another crop of the same video) |
-| `GET /api/media/{id}/source` | the whole original picture, un-cropped and un-rotated, in a form a browser can play (the crop tool draws on it; supports Range) |
+| `POST /api/media/import` | `{"url": "https://…", "max_height": 1080, "start": 0, "duration": null, "name": null}` (all but `url` optional) → `MediaItem` with `status: "processing"`, `stage: "downloading"` — fetch a video from a link (YouTube and whatever else yt-dlp handles, or a direct file URL) into the library, picture and sound. `max_height` is the "1080" of 1080p (the shorter side; 144..4320); `start` / `duration` (seconds) fetch only that part and set the item's trim; `name` defaults to the video's title. Failures (offline, unsupported site, removed video) end as `status: "error"` with a readable `error`; a `PATCH` with an `edit` (even the same one) tries the download again with the same settings. 422 for anything but an http(s) link |
+| `GET /api/media/{id}` | → `MediaItem` (`progress` 0..1 and `stage` while processing: `"waiting"`, `"downloading"`, `"converting"`, `"preparing the crop view"`) |
+| `PATCH /api/media/{id}` | `{"name"?, "edit"?: MediaEdit}` (at least one) → `MediaItem`; a changed `edit` re-makes the prepared files from the original (`status` goes back to `processing`; the old proxy keeps playing until the new one is ready, then every set using the item shows the new crop; see "Importing and cropping video"). 422 for an invalid edit (crop outside the picture, `end <= start`, an in point after the end, a crop or rotation of a sound); a still image ignores the trim. On an item that ended in error, an `edit` (changed or not) tries again |
+| `POST /api/media/{id}/duplicate` | `{"name"?}` (default: name + " copy") → `MediaItem` — a second item from the same original, with the same edit and ready at once (for another crop of the same video; then `PATCH` its `edit`). The original is hard-linked where the file system allows it, else copied. 409 while the original is still downloading |
+| `GET /api/media/{id}/source` | the whole original picture, un-cropped and un-rotated (but upright, as players show it), in a form a browser can play: the original when it can (pictures; MP4 / MOV / WebM with H.264, VP8/9 or AV1), else `source.mp4` made at ingest (H.264, longest side ≤ 1280, no sound; also for GIFs, which a browser cannot seek). Supports Range. 404 for sounds and before there is one |
 | `DELETE /api/media/{id}` | → `{"ok": true}`; if sets use it, 409 `{"detail": "Used by A, B", "sets": ["A", "B"]}` unless `?force=1` |
 | `GET /api/media/{id}/thumb.jpg` | a small still (video: a frame; audio: its waveform; image: itself) |
 | `GET /api/media/{id}/file` | the file for the browser to play in the library page (supports Range) |
@@ -218,8 +252,11 @@ JPEG, 128×384) of the newest frame — the browser draws it with
 a few times a second and binary sign frames at up to `fps`. No client
 messages.
 
-**`/ws/editor?fps=30`** — one editor session; opening a second one closes the
-first (the first gets `{"type": "closed", "reason": "…"}`). Client → server:
+**`/ws/editor?fps=30&live=1`** — one editor session; opening a second one closes the
+first (the first gets `{"type": "closed", "reason": "…"}`). `live=0` opens the
+session not live (the sign carries on with its schedule), so a client whose
+Live switch is off never takes the LEDs over, not even until its first
+message. Client → server:
 
 | Message | Meaning |
 | --- | --- |
@@ -234,7 +271,7 @@ Server → client: `{"type": "status", "t": 12.3, "playing": true, "live": true,
 "problems": [{"clip_id", "track_id", "message"}]}` about ten times a second
 (and at once after every client message), `{"type": "error", "message"}` for
 a message it could not use, and binary editor frames. A session opens paused
-at t = 0 and live. `problems` holds each renderer's `validate()` results plus
+at t = 0, and live unless the URL says `live=0`. `problems` holds each renderer's `validate()` results plus
 structural ones (unknown type, wrong target for the track, overlapping clips,
 zero length, a clip starting after the set ends). While a live session is
 open the sign's own clock is frozen; when the socket closes the session ends
@@ -248,27 +285,38 @@ everything and silences the sound.
 
 ## Internal Python interfaces
 
-Contracts in code: `render/base.py` (renderers), `output/base.py` (drivers),
+Contracts in code: `render/base.py` (renderers; `RenderContext.still` marks a
+one-off picture such as `/api/render.png`, for which a renderer may wait for a
+decoder instead of drawing a stand-in), `output/base.py` (drivers),
 `audio/base.py` (audio engine). Two more that cross package borders:
 
 ```python
 # trafficlight/media/library.py — implements render.base.MediaLookup
 class MediaLibrary:
-    def __init__(self, root: Path): ...        # root = data_dir() / "media"; loads what is there
-    rev: int                                    # grows on every change (add, status change, rename, delete)
+    def __init__(self, root: Path, fetcher=None): ...   # root = data_dir() / "media"; loads what is there.
+                                                # fetcher: stands in for download.fetch (tests: no network)
+    rev: int                                    # grows on every change (add, status change, rename, delete;
+                                                # progress at most twice a second)
     def list(self) -> list[MediaItem]: ...      # newest first
     def get(self, media_id: str) -> MediaItem | None: ...
-    def add(self, src: Path, name: str) -> MediaItem: ...
+    def add(self, src: Path, name: str, edit: MediaEdit | None = None) -> MediaItem: ...
         # `src` is a temp file holding the upload, with the original extension. It is moved into
         # the library; returns at once with status "processing"; ingest runs on a background thread
         # and ends with status "ready" or "error". ValueError for a file type it cannot take.
-    def rename(self, media_id: str, name: str) -> MediaItem: ...   # KeyError if unknown
+    def import_url(self, url, *, max_height=1080, start=0.0, duration=None, name=None) -> MediaItem: ...
+        # POST /api/media/import: returns at once ("processing", stage "downloading"); a download thread
+        # fetches, then the ingest thread prepares. ValueError for something that is not an http(s) link.
+    def update(self, media_id, *, name=None, edit: MediaEdit | None = None) -> MediaItem: ...
+        # PATCH: rename and / or a new edit (re-made in the background). KeyError, ValueError (see the route)
+    def rename(self, media_id: str, name: str) -> MediaItem: ...   # update(name=...)
+    def duplicate(self, media_id, name=None) -> MediaItem: ...     # KeyError; ValueError while downloading
     def delete(self, media_id: str) -> None: ...                    # KeyError if unknown
-    def video_path(self, media_id) -> str | None: ...   # MediaLookup: the proxy the sign decodes
-    def image_path(self, media_id) -> str | None: ...
-    def audio_path(self, media_id) -> str | None: ...
-    def thumb_path(self, media_id) -> Path | None: ...  # thumb.jpg
+    def video_path(self, media_id) -> str | None: ...   # MediaLookup: the proxy the sign decodes (of the
+    def image_path(self, media_id) -> str | None: ...   #   current version; renderers ask every frame and
+    def audio_path(self, media_id) -> str | None: ...   #   follow a change)
+    def thumb_path(self, media_id) -> Path | None: ...  # thumb.jpg of the result
     def file_path(self, media_id) -> Path | None: ...   # what GET /api/media/{id}/file serves: playable in a browser
+    def source_path(self, media_id) -> Path | None: ... # what GET /api/media/{id}/source serves
     def peaks(self, media_id) -> dict | None: ...       # {"rate": float, "peaks": [0..1, ...]}
     def wait_ready(self, media_id, timeout: float = 30) -> MediaItem: ...   # blocks until not "processing"
     def close(self) -> None: ...
@@ -287,10 +335,14 @@ The server owns every HTTP route, including `/api/media*` (it calls
 data/settings.json
 data/sets/index.json          play order: {"order": [ids]}
 data/sets/<id>.json           one Set
-data/media/<id>/meta.json     MediaItem
-data/media/<id>/original.*    the upload or download, untouched
+data/media/<id>/meta.json     MediaItem (+ "import": what is left to fetch, until a link import has its original)
+data/media/<id>/original.*    the upload or download, untouched (a duplicate's is a hard link where possible)
 data/media/<id>/source.mp4    only if a browser cannot play the original: the whole picture for the crop tool
-data/media/<id>/proxy.mp4     video: small, short-GOP, no sound (what the sign decodes)
-data/media/<id>/audio.*       sound track of a video / normalised audio item
-data/media/<id>/thumb.jpg, peaks.json
+data/media/<id>/v<N>/         the prepared files of version N (MediaItem.version); older versions are deleted
+                              once nothing reads them, unfinished ones at start-up:
+    proxy.mp4                 video: turned, cropped, trimmed, small, short-GOP, no sound (what the sign decodes)
+    proxy.png                 image: turned and cropped
+    audio.wav                 sound track of a video (cut to match the proxy) / of an audio item
+    thumb.jpg, peaks.json     thumbnail of the result; waveform
+data/media/<id>/download/     a link import while it downloads
 ```

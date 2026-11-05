@@ -189,6 +189,7 @@ main:has(> .editor) { max-width: none; padding: 0; display: flex; flex-direction
 .colorpick { border: 1px solid var(--border); border-radius: 8px; background: var(--surface2); cursor: pointer; font-variant-numeric: tabular-nums; }
 .colorpick input[type=color] { width: 20px; height: 20px; padding: 0; border: 0; background: none; border-radius: 4px; cursor: pointer; }
 .mediactl { display: flex; gap: 6px; align-items: center; }
+.insp-crop { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 4px 0; }
 .mediactl img { width: 48px; height: 34px; object-fit: cover; border-radius: 4px; background: #000; flex: none; }
 .mediactl select { flex: 1; min-width: 0; }
 .insp-problems { border: 1px solid var(--bad); background: rgba(255, 97, 89, .1); border-radius: 8px; padding: 6px 10px; margin: 6px 0; font-size: .85rem; color: #ffc2bd; }
