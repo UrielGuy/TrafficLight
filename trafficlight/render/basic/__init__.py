@@ -1,1 +1,2 @@
-"""Renderers: basic. Import the modules that call @register here."""
+"""Renderers: basic. Importing this package registers light, text and figure."""
+from . import figure, light, text  # noqa: F401
