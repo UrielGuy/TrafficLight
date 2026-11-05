@@ -106,6 +106,17 @@ class Settings(BaseModel):
 
 
 # ---------------------------------------------------------------- media
+class MediaEdit(BaseModel):
+    """How an item's original is prepared for the sign. Never destructive: the original
+    file is kept as uploaded, and changing the edit re-makes the proxy from it."""
+    rotate: Literal[0, 90, 180, 270] = 0   # degrees clockwise, applied first
+    crop: Optional[list[float]] = None     # [x, y, w, h] as fractions (0..1) of the rotated picture; None = all of it
+    start: float = 0.0                     # trim: seconds into the original
+    end: Optional[float] = None            # seconds into the original; None = to its end
+    shape: Literal["free", "light", "sign"] = "free"   # what the crop was drawn for: one light (1:1), the whole
+                                           # sign (1:3), or no fixed shape. A hint for the crop tool only.
+
+
 class MediaItem(BaseModel):
     id: str
     name: str
@@ -119,3 +130,11 @@ class MediaItem(BaseModel):
     has_audio: bool = False
     size: int = 0                      # bytes of the original file
     added: float = 0.0                 # unix time
+    # duration / width / height / fps above describe the item as prepared (after rotate, crop, trim).
+    edit: MediaEdit = Field(default_factory=MediaEdit)
+    source_duration: float = 0.0       # the original: seconds,
+    source_width: int = 0              # and display size before rotate and crop
+    source_height: int = 0
+    source_url: Optional[str] = None   # where it was imported from, if from a link
+    progress: float = 0.0              # 0..1 while status is "processing"
+    stage: str = ""                    # what is happening while processing: "downloading", "converting", ...

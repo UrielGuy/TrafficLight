@@ -3,6 +3,9 @@
 React + TypeScript + Vite. `npm run build` type-checks and writes `web/dist`, which the Python server serves at `/`
 (index.html is the fallback for client routes). From WSL: `cmd.exe /c "cd web && npm run build"` (working directory = repo root).
 `npm run dev` serves on Vite's port and proxies `/api` and `/ws` to `localhost:8080`.
+`npm test` runs the unit tests (vitest). `node e2e/editor.e2e.mjs` drives the editor end to end in Microsoft Edge
+(playwright-core, `channel: 'msedge'`) against a running server (`TL_URL`, default `http://localhost:8091`; it needs a ready
+video and audio item in the library) and writes screenshots to `e2e/shots`. `node e2e/shot.mjs <url> <w> <h> <out.png>` takes one.
 
 ## Layout
 
@@ -19,7 +22,7 @@ React + TypeScript + Vite. `npm run build` type-checks and writes `web/dist`, wh
 | `src/state/confirm.ts` | `confirmDialog(title, {text, action, danger})` -> `Promise<boolean>`. |
 | `src/state/hooks.ts` | `useDebouncedValue(external, commit)`, `formatTime`, `formatSize`. |
 | `src/pages/` | Dashboard, Sets, Media, Settings. |
-| `src/editor/Editor.tsx` | Placeholder for `/editor/:id` (default export). Replace it. |
+| `src/editor/` | The timeline editor at `/editor/:id`. `Editor.tsx` page (load, recovery, session, keys, layout); `Timeline.tsx` ruler, tracks, clips, playhead and all pointer gestures; `ClipView.tsx`; `Palette.tsx` library; `Inspector.tsx` (controls generated from `ParamSpec`s); `Transport.tsx`. Plain logic, unit-tested: `model.ts` (placement without overlaps, snapping, trim, split, set edits), `history.ts` (undo), `beats.ts`. State: `doc.ts` (draft + undo + selection + local backup), `session.ts` (`/ws/editor`, playhead clock), `dnd.ts`, `view.ts`. Drawing: `draw.ts` (ruler and grid canvases). |
 | `src/styles.css` | One stylesheet, CSS variables at the top (dark theme, amber accent). |
 | `mock/` | Development mock of the API (`mock_server.py`, not the real server) and `shoot.sh` (Edge headless screenshots). |
 

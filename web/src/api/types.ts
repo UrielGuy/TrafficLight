@@ -184,6 +184,8 @@ export interface EditorStatus {
   playing: boolean;
   live: boolean;
   duration: number;
+  /** The loop in effect (a range shorter than the minimum falls back to the whole set). */
+  loop: { on: boolean; from: number; to: number };
   problems: Problem[];
 }
 export type EditorClientMessage =

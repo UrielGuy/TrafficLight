@@ -111,6 +111,24 @@ from that, so adding a renderer needs no UI change.
 | `image` | face, all | A still image or GIF. |
 | `audio` | audio | Music or sound from the library. |
 
+## Importing and cropping video
+
+Uploads and link imports are stored as they are (`original.*`, full
+quality); nothing is masked or reduced. What the sign plays is a proxy made
+from the original according to the item's `MediaEdit`: rotate, then crop,
+then trim, then scale to the smallest size that still covers 128×384 (never
+up). The edit is not destructive and can be changed at any time; the proxy
+is simply made again. `MediaItem.duration / width / height` describe the
+prepared result; `source_*` the original.
+
+The crop tool (Media page) shows the whole original with a crop box that can
+be locked to one light (1:1) or the whole sign (1:3), in/out points, rotation
+in quarter turns, and a preview of the result as the sign will show it —
+optionally through the round masks (one disc, or three for the whole sign),
+because that is what a light really shows. A crop made for one light can
+still be placed on the whole sign and the other way round: the clip's `fit`
+decides how it fills the box.
+
 ## Schedule
 
 `Settings.schedule.default_set` is the set the sign loops. When it ends and
@@ -163,8 +181,11 @@ JSON everywhere. Errors: HTTP 4xx with `{"detail": "message"}`.
 | `POST /api/output/test` | `{"pattern": "off" \| "panels" \| "white" \| "red" \| "green" \| "blue" \| "gradient"}` → `{"ok": true}`; a test picture replaces the show until `"off"` (panels = each panel in its own colour with its number, to check the mapping) |
 | `GET /api/media` | → `[MediaItem]` |
 | `POST /api/media` | multipart `file` (+ optional `name`) → `MediaItem` with `status: "processing"`; poll `GET /api/media/{id}` until `ready` or `error` |
-| `GET /api/media/{id}` | → `MediaItem` |
-| `PATCH /api/media/{id}` | `{"name"}` → `MediaItem` |
+| `POST /api/media/import` | `{"url": "https://…", "max_height": 1080, "start": 0, "duration": null}` (all but `url` optional) → `MediaItem` with `status: "processing"`, `stage: "downloading"` — fetch a video from a link (YouTube and whatever else yt-dlp handles, or a direct file URL) into the library, picture and sound |
+| `GET /api/media/{id}` | → `MediaItem` (`progress` 0..1 and `stage` while processing) |
+| `PATCH /api/media/{id}` | `{"name"?, "edit"?: MediaEdit}` → `MediaItem`; a changed `edit` re-makes the proxy from the original (`status` goes back to `processing`; the old proxy keeps playing until the new one is ready, then every set using the item shows the new crop) |
+| `POST /api/media/{id}/duplicate` | `{"name"?}` → `MediaItem` — a second item from the same original (for another crop of the same video) |
+| `GET /api/media/{id}/source` | the whole original picture, un-cropped and un-rotated, in a form a browser can play (the crop tool draws on it; supports Range) |
 | `DELETE /api/media/{id}` | → `{"ok": true}`; if sets use it, 409 `{"detail": "Used by A, B", "sets": ["A", "B"]}` unless `?force=1` |
 | `GET /api/media/{id}/thumb.jpg` | a small still (video: a frame; audio: its waveform; image: itself) |
 | `GET /api/media/{id}/file` | the file for the browser to play in the library page (supports Range) |
@@ -267,7 +288,8 @@ data/settings.json
 data/sets/index.json          play order: {"order": [ids]}
 data/sets/<id>.json           one Set
 data/media/<id>/meta.json     MediaItem
-data/media/<id>/original.*    the upload
+data/media/<id>/original.*    the upload or download, untouched
+data/media/<id>/source.mp4    only if a browser cannot play the original: the whole picture for the crop tool
 data/media/<id>/proxy.mp4     video: small, short-GOP, no sound (what the sign decodes)
 data/media/<id>/audio.*       sound track of a video / normalised audio item
 data/media/<id>/thumb.jpg, peaks.json
