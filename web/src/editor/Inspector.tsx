@@ -320,7 +320,7 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
 }
 
 // ---------------------------------------------------------------- set
-function SetInspector() {
+function SetInspector({ onBack }: { onBack?: () => void }) {
   const s = useDoc((d) => d.history.present);
   const problems = useStore(problemListStore);
   const catalog = useCatalog();
@@ -339,7 +339,10 @@ function SetInspector() {
   const rows = rowTracks(s.tracks).length;
   return (
     <div className="insp">
-      <div className="insp-head"><div className="grow"><div className="insp-title">Set</div><div className="muted small">{rows} tracks · {clips} clips</div></div></div>
+      <div className="insp-head">
+        <div className="grow"><div className="insp-title">Set</div><div className="muted small">{rows} tracks · {clips} clips</div></div>
+        {onBack && <button type="button" className="small-btn" onClick={onBack} data-testid="set-back">Back to the selection</button>}
+      </div>
       <section className="insp-section">
         <Row label="Name" htmlFor="s-name"><input id="s-name" type="text" value={s.name} onChange={(e) => patch({ name: e.target.value }, 'name')} onBlur={sealHistory} /></Row>
         <Row label="Tempo (bpm)" htmlFor="s-bpm" help={tapBpm ? `Tapped ${tapBpm} bpm — keep tapping to refine` : 'Tap along to the music to set it'}>
@@ -409,12 +412,17 @@ function MultiInspector({ count }: { count: number }) {
   );
 }
 
-export default function Inspector() {
+/**
+ * The selected clip, or the set when nothing is selected. `showSet` shows the set's settings while
+ * clips stay selected (the "Set settings" button); `onBack` returns to them.
+ */
+export default function Inspector({ showSet = false, onBack }: { showSet?: boolean; onBack?: () => void }) {
   const count = useDoc((s) => s.selection.length);
   // two selectors that each return objects of the set itself, so they are stable between edits
   const clip = useDoc((s) => (s.selection.length === 1 ? findClip(s.history.present, s.selection[0])?.clip ?? null : null));
   const track = useDoc((s) => (s.selection.length === 1 ? findClip(s.history.present, s.selection[0])?.track ?? null : null));
   const catalog = useCatalog();
+  if (showSet) return <SetInspector onBack={count > 0 ? onBack : undefined} />;
   if (count > 1) return <MultiInspector count={count} />;
   if (clip && track) {
     const type = catalog?.find((t) => t.type === clip.type);

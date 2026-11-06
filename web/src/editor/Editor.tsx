@@ -205,7 +205,15 @@ function EditorView({ session }: { session: EditorSession }) {
   const canRedo = useDoc((s) => s.history.future.length > 0);
   const info = useStore(sessionStore);
   const narrow = useMediaQuery('(max-width: 899px)');
-  const [tab, setTab] = useState<'library' | 'inspector'>('library');
+  const [tab, setTab] = useState<'library' | 'inspector' | 'set'>('library');
+  // The inspector shows the set although clips are selected, until the selection changes.
+  const [showSet, setShowSet] = useState(false);
+  const selectionKey = useDoc((s) => s.selection.join(' '));
+  const hasSelection = selectionKey !== '';
+  useEffect(() => {
+    setShowSet(false);
+    setTab((t) => (t === 'set' && selectionKey !== '' ? 'inspector' : t));
+  }, [selectionKey]);
   const [showLib, setShowLib] = useState(true);
   const [showInsp, setShowInsp] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
@@ -320,6 +328,17 @@ function EditorView({ session }: { session: EditorSession }) {
     setShowInsp(true);
     setCollapsed(false);
   }, []);
+  const openSetSettings = () => {
+    setShowSet(true);
+    setTab('set');
+    setShowInsp(true);
+    setCollapsed(false);
+  };
+  const backToSelection = () => {
+    setShowSet(false);
+    setTab('inspector');
+  };
+  const setShown = !collapsed && (narrow ? tab === 'set' : showInsp && (showSet || !hasSelection));
 
   return (
     <div className={`editor ${narrow ? 'narrow' : 'wide'} ${collapsed ? 'collapsed' : ''}`}>
@@ -335,6 +354,8 @@ function EditorView({ session }: { session: EditorSession }) {
           <button className="icon-btn" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><Icon name="redo" /></button>
           {!narrow && (
             <>
+              <button className={`panel-btn ${setShown ? 'on' : ''}`} aria-pressed={setShown} onClick={openSetSettings} data-testid="set-settings"
+                title="Name, tempo, beat offset, length and rotation of the whole set">Set settings</button>
               <button className={`panel-btn ${showLib ? 'on' : ''}`} aria-pressed={showLib} onClick={() => setShowLib(!showLib)}>Library</button>
               <button className={`panel-btn ${showInsp ? 'on' : ''}`} aria-pressed={showInsp} onClick={() => setShowInsp(!showInsp)}>Inspector</button>
             </>
@@ -356,14 +377,15 @@ function EditorView({ session }: { session: EditorSession }) {
         <div className="ed-top">
           {!narrow && showLib && <aside className="ed-panel ed-lib" aria-label="Library"><Palette /></aside>}
           <PreviewBox />
-          {!narrow && showInsp && <aside className="ed-panel ed-insp" aria-label="Inspector"><Inspector /></aside>}
+          {!narrow && showInsp && <aside className="ed-panel ed-insp" aria-label="Inspector"><Inspector showSet={showSet} onBack={backToSelection} /></aside>}
           {narrow && (
             <div className="ed-panel ed-tabs">
               <div className="ed-tabbar" role="tablist">
                 <button role="tab" aria-selected={tab === 'library'} className={tab === 'library' ? 'active' : ''} onClick={() => setTab('library')}>Library</button>
                 <button role="tab" aria-selected={tab === 'inspector'} className={tab === 'inspector' ? 'active' : ''} onClick={() => setTab('inspector')}>Inspector</button>
+                <button role="tab" aria-selected={tab === 'set'} className={tab === 'set' ? 'active' : ''} onClick={openSetSettings} data-testid="set-settings">Set</button>
               </div>
-              <div className="ed-tabbody">{tab === 'library' ? <Palette /> : <Inspector />}</div>
+              <div className="ed-tabbody">{tab === 'library' ? <Palette /> : <Inspector showSet={tab === 'set'} onBack={backToSelection} />}</div>
             </div>
           )}
         </div>
