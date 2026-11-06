@@ -63,9 +63,10 @@ def test_colours_and_transparency():
     F = get_renderer("figure")
     f = F({"figure": "standing", "bg": "#0000ff", "ink": "#ffffff"}, ENV).render(ctx())
     assert tuple(f[0, 0]) == (0, 0, 255) and ((f == 255).all(axis=2)).sum() > 300
-    rgba = F({"figure": "walking", "ink": "#ff00ff", "transparent": True}, ENV).render(ctx())
-    assert rgba.shape == (config.FACE, config.FACE, 4)
-    assert rgba[0, 0, 3] == 0 and rgba[..., 3].max() == 255 and (rgba[..., :3] == (255, 0, 255)).all()
+    for see_through in ({"bg": "transparent"}, {"transparent": True}):
+        rgba = F({"figure": "walking", "ink": "#ff00ff", **see_through}, ENV).render(ctx())
+        assert rgba.shape == (config.FACE, config.FACE, 4)
+        assert rgba[0, 0, 3] == 0 and rgba[..., 3].max() == 255 and (rgba[..., :3] == (255, 0, 255)).all()
     hue = F({"figure": "standing", "bg": "#ff0000", "bg_hue": 120}, ENV)
     assert tuple(hue.render(ctx(t=0.5))[0, 0]) == (0, 255, 0)
 

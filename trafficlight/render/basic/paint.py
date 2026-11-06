@@ -17,15 +17,20 @@ def hue_param(key: str, label: str) -> ParamSpec:
 
 
 def colour_params(bg_default: str = "face", ink_default: str = "#000000") -> list[ParamSpec]:
-    """Background and ink colours, their hue jumps, and the see-through background switch."""
+    """Background (which may be transparent) and ink colours, and their hue jumps."""
     return [
-        ParamSpec("bg", "Background", "color", bg_default),
+        ParamSpec("bg", "Background", "color", bg_default, transparent=True,
+                  help="Transparent: only the ink is drawn, over whatever is below (a whole-sign video)."),
         ParamSpec("ink", "Ink", "color", ink_default),
         hue_param("bg_hue", "Background hue jump per beat"),
         hue_param("ink_hue", "Ink hue jump per beat"),
-        ParamSpec("transparent", "No background", "bool", False,
-                  help="Only the ink is drawn; tracks below show through around it."),
     ]
+
+
+def see_through(p: dict[str, Any]) -> bool:
+    """Is the background transparent? Sets saved before "transparent" became a colour say so
+    with a separate `transparent` switch, which still counts."""
+    return color.is_transparent(p.get("bg")) or flag(p.get("transparent"))
 
 
 def number(value: Any, default: float, lo: float | None = None, hi: float | None = None) -> float:
@@ -53,9 +58,11 @@ def flag(value: Any) -> bool:
 def colours(p: dict[str, Any], ctx: RenderContext) -> tuple[color.RGB, color.RGB]:
     """(background, ink) for this frame. Ink the same as the background is never invisible:
     it turns black, or white on black (the old sign's rule)."""
+    if see_through(p):          # no background to clash with, and none to steer a random ink away from
+        return color.BLACK, color.resolve(p.get("ink"), ctx, "ink", number(p.get("ink_hue"), 0.0), fallback=color.BLACK)
     bg = color.resolve(p.get("bg"), ctx, "bg", number(p.get("bg_hue"), 0.0), fallback=ctx.face_color)
     ink = color.resolve(p.get("ink"), ctx, "ink", number(p.get("ink_hue"), 0.0), avoid=bg, fallback=color.BLACK)
-    if ink == bg and not flag(p.get("transparent")):
+    if ink == bg:
         ink = color.WHITE if bg == color.BLACK else color.BLACK
     return bg, ink
 

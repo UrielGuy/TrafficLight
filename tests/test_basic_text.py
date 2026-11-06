@@ -113,9 +113,16 @@ def test_colours():
     assert ((night == 255).all(axis=2)).sum() > 500                    # ... or white on black
     hue = T({"text": "STOP", "bg": "#ff0000", "bg_hue": 120}, ENV)
     assert tuple(hue.render(ctx(t=0.5))[0, 0]) == (0, 255, 0)
-    rgba = T({"text": "STOP", "ink": "#00ff00", "transparent": True}, ENV).render(ctx())
-    assert rgba.shape == (config.FACE, config.FACE, 4)
-    assert rgba[0, 0, 3] == 0 and rgba[..., 3].max() == 255 and (rgba[..., :3] == (0, 255, 0)).all()
+    # a transparent background (the colour choice, or the switch of older sets): only the ink, with alpha
+    for see_through in ({"bg": "transparent"}, {"transparent": True}, {"bg": "Transparent", "bg_hue": 90}):
+        rgba = T({"text": "STOP", "ink": "#00ff00", **see_through}, ENV).render(ctx())
+        assert rgba.shape == (config.FACE, config.FACE, 4)
+        assert rgba[0, 0, 3] == 0 and rgba[..., 3].max() == 255 and (rgba[..., :3] == (0, 255, 0)).all()
+    black = T({"text": "STOP", "bg": "transparent"}, ENV).render(ctx())     # the default black ink stays black
+    assert black.shape[2] == 4 and not black[..., :3].any()
+    bg = {p["key"]: p for p in T.describe()["params"]}["bg"]
+    assert bg["transparent"] is True and "transparent" not in {p["key"] for p in T.describe()["params"]}
+    assert "transparent" not in {p["key"]: p for p in T.describe()["params"]}["ink"]
 
 
 def test_too_long_text_draws_only_the_background():

@@ -8,7 +8,7 @@ import numpy as np
 from ... import config
 from ..base import ClipRenderer, ParamSpec, RenderContext, RenderEnv, register
 from .fonts import font_options
-from .paint import colour_params, colours, compose, flag, number
+from .paint import colour_params, colours, compose, number, see_through
 from .textlayout import LADDER, get_layout
 
 
@@ -42,7 +42,7 @@ class Text(ClipRenderer):
     def __init__(self, params: dict[str, Any], env: RenderEnv):
         super().__init__(params, env)
         self._key = _params(self.p)
-        self._transparent = flag(self.p.get("transparent"))
+        self._transparent = see_through(self.p)
         get_layout(*self._key, config.FACE, config.FACE)    # lay out now rather than on the first frame
 
     def render(self, ctx: RenderContext) -> np.ndarray:

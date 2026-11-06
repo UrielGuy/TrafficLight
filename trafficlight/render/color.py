@@ -62,6 +62,15 @@ def random_color(seed: int, salt: str = "", avoid: RGB | None = None) -> RGB:
     return (round(r * 255), round(g * 255), round(b * 255))
 
 
+TRANSPARENT = "transparent"
+
+
+def is_transparent(value: Any) -> bool:
+    """Is a colour param set to "transparent" (ParamSpec.transparent)? Ask before resolve():
+    there is no RGB for it."""
+    return isinstance(value, str) and value.strip().lower() == TRANSPARENT
+
+
 def resolve(value: Any, ctx: RenderContext, salt: str = "", hue_per_beat: float = 0.0,
             avoid: RGB | None = None, fallback: RGB = WHITE) -> RGB:
     """A colour param's value -> the colour to draw now.

@@ -36,7 +36,7 @@ web UI (React)  --REST + WebSocket-->  server (FastAPI)
 | `trafficlight/model.py` | Pydantic models: `Clip`, `Track`, `Set`, `Settings`, `MediaItem`. |
 | `trafficlight/render/base.py` | `ClipRenderer`, `ParamSpec`, `RenderContext`, `AudioCue`, `RenderEnv`, registry. |
 | `trafficlight/render/color.py` | Colour param values (`#rrggbb`, `face`, `random`), hue jump. |
-| `trafficlight/render/basic/` | `light`, `text`, `figure` renderers; text layout; fonts; sprites. |
+| `trafficlight/render/basic/` | `light`, `off`, `text`, `figure` renderers; text layout; fonts; sprites. |
 | `trafficlight/render/fx/` | Beat animations (`fx:*`) and the clock. |
 | `trafficlight/render/media/` | `video`, `image`, `audio` clip types. |
 | `trafficlight/media/library.py` | Uploads, link imports, edits, proxies, thumbnails; implements `MediaLookup`. |
@@ -74,7 +74,9 @@ See `trafficlight/model.py` (authoritative). A **set** is a timeline:
 * Clips on one track never overlap. A set may have any number of tracks per
   target (the editor can add and remove tracks).
 * `tracks[0]` is the top layer on the sign (and the top row of the editor,
-  among the tracks that have a row; see below).
+  among the tracks that have a row; see below), except that whole-sign
+  (`all`) tracks are always beneath the lights' tracks: a whole-sign clip is
+  the backdrop and a clip on one light overrides it there.
 
 **How the editor shows whole-sign clips.** A track with `target: "all"` has
 no row in the timeline. Its clips are drawn as one tall block over all light
@@ -82,14 +84,12 @@ rows (every `faceN` track, extra ones included); the light rows are kept
 together above the audio rows (reordering and adding tracks enforce it; a
 stored order that mixes them is shown that way and rewritten only when the
 track order is edited). New whole-sign clips go on the first `all` track,
-which the editor creates as `tracks[0]` when a set has none. A whole-sign
-clip takes the three lights over: in the editor it may not overlap any clip
-on a light track or another whole-sign clip, and no light clip may be placed,
-moved or trimmed into its time (drops, moves, trims, paste, duplicate and the
-inspector's "Shows on: One light / Whole sign" switch all follow this). Audio
-tracks are not affected. The player does not enforce it: a set that breaks it
-(older data, hand-made, "Make a set") loads and plays as composited above,
-and only what the user moves next must fit. A library video or picture is
+which the editor creates when a set has none. A whole-sign clip is the
+backdrop of the three lights: a clip on a light's row may sit over it in
+time and replaces it in that light (drawn on top of the block in the
+timeline, as the player composites it); the `off` clip (black) switches one
+light off that way. Whole-sign clips may not overlap each other, and clips
+on one row may not overlap each other. A library video or picture is
 added as a whole-sign clip when its crop shape is `sign`, or `free` and taller
 than √3:1. The editor clears `muted` on `all` tracks with its first edit (they
 have no mute button).
@@ -101,8 +101,10 @@ For set time `t`:
 1. Start with black. For each light, if `Settings.off_style == "ring"`, draw
    a dim outline ring (radius `FACE_RADIUS`, width `RING_WIDTH`, the light's
    `face_colors` entry at ~15 %) — this is what an unlit light looks like.
-2. Walk the visual tracks from the last to the first (skipping muted ones).
-   On each, find the clip covering `t` (`start <= t < start + duration`),
+2. Walk the visual tracks from the bottom layer to the top, skipping muted
+   ones: first the `all` tracks from the last to the first, then the lights'
+   tracks from the last to the first (`player.paint_order`), so a clip on a
+   light always shows over a whole-sign clip. On each, find the clip covering `t` (`start <= t < start + duration`),
    render it into its box (128×128 at the light's rows for `faceN`, 128×384
    for `all`), then apply, in this order: the renderer's own alpha (if RGBA),
    the mask (`Clip.mask`; default True = anti-aliased disc of radius
@@ -116,6 +118,14 @@ For set time `t`:
 `RenderContext.seed` is stable while a clip plays once and changes the next
 time the set comes round, so "random" colours re-roll every pass.
 
+**Transparent colours.** A colour param whose `ParamSpec` has
+`"transparent": true` (backgrounds: text, figures, the beat animations'
+circle or background) may hold the value `"transparent"` besides
+`"#rrggbb"`, `"face"` and `"random"`. Nothing is drawn in that colour: the
+renderer returns RGBA and what is below the clip shows through, which is how
+text or an animation on one light sits over a whole-sign video
+(`render/color.is_transparent`).
+
 ## Clip types
 
 Every clip type is a `ClipRenderer` subclass registered with `@register`.
@@ -125,6 +135,7 @@ from that, so adding a renderer needs no UI change.
 | type | where | what |
 | --- | --- | --- |
 | `light` | face, all | A plain disc in a colour (a lit traffic light). |
+| `off` | face, all | Black. On a light over a whole-sign clip it switches that light off. |
 | `text` | face | Text fitted in the light: automatic size and line breaks, Hebrew and English. |
 | `figure` | face | Animated pictogram (walking, dancing, DJ…). |
 | `fx:quarters`, `fx:pulse`, `fx:wave`, `fx:clock`, `fx:ecg`, `fx:ecgsweep`, `fx:heart`, `fx:ripples`, `fx:eq`, `fx:chase`, `fx:ball`, `fx:sparkle`, `fx:fillv`, `fx:fillx` | face (some also all) | Beat animations ported from the old sign. |

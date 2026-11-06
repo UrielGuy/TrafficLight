@@ -48,6 +48,9 @@ class ParamSpec:
       "bool"    checkbox                  "select" one of `options` [{value,label}]
       "color"   "#rrggbb", or "face" (the light's own colour from Settings.face_colors),
                 or "random" (a new colour every time the clip starts). See render/color.py.
+                With `transparent=True` the value may also be "transparent": nothing is
+                drawn in that colour and what is below the clip shows through (the
+                renderer returns RGBA). For backgrounds, so a clip can sit over a video.
       "media"   id of a MediaItem of `media_kind` ("video" | "image" | "audio")
       "font"    font id from /api/catalog fonts ("" = automatic)
     """
@@ -61,6 +64,7 @@ class ParamSpec:
     options: Optional[list[dict[str, Any]]] = None
     media_kind: Optional[str] = None
     help: str = ""
+    transparent: bool = False
 
     def to_json(self) -> dict[str, Any]:
         d = {"key": self.key, "label": self.label, "kind": self.kind, "default": self.default}
@@ -70,6 +74,8 @@ class ParamSpec:
                 d[k] = v
         if self.help:
             d["help"] = self.help
+        if self.transparent:
+            d["transparent"] = True
         return d
 
 

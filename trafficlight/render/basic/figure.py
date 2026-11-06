@@ -7,7 +7,7 @@ import numpy as np
 
 from ..base import ClipRenderer, ParamSpec, RenderContext, RenderEnv, register
 from . import figures
-from .paint import colour_params, colours, compose, flag, number
+from .paint import colour_params, colours, compose, number, see_through
 
 DEFAULT = "walking"
 
@@ -35,7 +35,7 @@ class Figure(ClipRenderer):
         super().__init__(params, env)
         self._id = _figure_id(self.p.get("figure"))
         self._speed = number(self.p.get("speed"), 1.0, 0.0, 16.0)
-        self._transparent = flag(self.p.get("transparent"))
+        self._transparent = see_through(self.p)
         self._field: figures.DiscField | None = None
 
     def _alpha(self, ctx: RenderContext) -> np.ndarray:

@@ -49,6 +49,16 @@ def test_a_light_clip_shows_over_a_whole_sign_clip_wherever_the_tracks_are():
         assert tuple(f[F + C, 2]) == (0, 0, 0)          # right up to the rim of the middle light
 
 
+def test_text_with_a_transparent_background_sits_over_a_whole_sign_clip():
+    whole = ("all", [solid("#0000ff")])
+    text = ("face1", [Clip(type="text", start=0, duration=4, params={"text": "I", "bg": "transparent", "ink": "#ffffff"})])
+    f, _ = Player(env(off_style="dark"), make_set(whole, text), background_init=False).render(0.5)
+    middle = f[F:2 * F]
+    assert px(f, 0) == px(f, 2) == (0, 0, 255)
+    assert tuple(middle[C, 20]) == (0, 0, 255)                       # beside the letter: the clip below
+    assert (middle == 255).all(axis=2).sum() > 200                   # the letter itself, in white
+
+
 def test_face_clip_masked_and_placed():
     s = make_set(("face1", [solid("#00ff00")]))
     f, _ = Player(env(off_style="dark"), s, background_init=False).render(1.0)
