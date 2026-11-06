@@ -254,6 +254,7 @@ On the Pi: `~/.venvs/trafficlight/bin/python -m …`.)
 | The bottom row of the last band flickers or lights part-way | protocol option `sync_gap_ms` | Try `--options sync_gap_ms=3`, then 5 (section 8). |
 | Movement stutters at 60 fps | `Settings.fps` / options | Try `--fps 50`. One source saw stutter above about 50 Hz. Also try `--options sync_repeat=1` or `=2`. |
 | `--brightness` changes nothing | protocol option `brightness_mode` | `--options brightness_mode=software`. |
+| Still pictures are steady, moving ones shimmer slightly | card refresh (LEDVision) | Each new frame swaps the card's picture buffers and disturbs its refresh (section 9, "Buffer swap"). Raise the refresh rate in LEDVision. |
 
    Work in that order: wiring first, then colours. Once the sign reads
    1..6 from the top, upright, with correct swatches, enter the colour
@@ -306,7 +307,8 @@ or with the tool's `--options`.
 | `brightness_packet` | `linear` | The 0x0A packet: `linear` (FPP: same value as the display packet), `ledvision` (LEDVision's non-linear levels, after Kubota), `off` (PanelPlayer: not needed). |
 | `brightness_mode` | `auto` | `card`: brightness is sent to the card. `software`: pixels are scaled and the card is told 100 %. `auto` = card, or software when the card reports firmware 2.x / 3.x (FPP: brightness "doesn't seem to work" there). |
 | `white_balance` | `1/1/1` | R/G/B multipliers in the display packet (colour temperature): e.g. `1/0.86/0.56` ≈ 4500 K (Kubota's table). |
-| `detect` | `1` | Send detection packets until the card answers. |
+| `detect` | `1` | Send detection packets until the card answers, then every 2 s (a card that restarted gets the picture again). |
+| `skip_unchanged` | `1` | Do not re-send a picture the card already shows (section 9, "Buffer swap"). `0` sends every frame. |
 | `assumed_mbps` | 1000 | Link speed for wire-time estimates when the OS does not report it. |
 
 ## 9. Protocol reference
@@ -384,6 +386,14 @@ reverse engineering:
   brightness packets (and rows) twice. FPP repeats the display packet and
   the brightness packet, but not the rows ("seems unnecessary"). The driver
   repeats only the display packet on firmware ≥ 13 (`sync_repeat`).
+* **Buffer swap:** the card is double-buffered. Rows go into a hidden
+  buffer; each display packet swaps it with the shown one (display packets
+  alone flip between the last two pictures). On firmware 13.39 / 5A-75B the
+  swap disturbs the LED refresh: a solid colour sent at 60 fps visibly
+  flickers (less at 10 fps); rows without a display packet, detection
+  packets, or no traffic at all do not. So the driver sends a picture only
+  when it changed (`skip_unchanged`); the card keeps the last one. Moving
+  pictures still swap every frame. [tested on the card, 2026-11-06]
 * **Brightness:** byte 35 of the display packet is linear: 0x80 = 50 %,
   0xbf = 75 % (Kubota's table; FPP sends 2.55 × percent). Bytes 38..40 are
   linear R, G, B levels for colour temperature. 6500 K = all equal to the

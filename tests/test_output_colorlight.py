@@ -52,8 +52,10 @@ KUBOTA_REPLY = hexdump("""
 MACS = bytes.fromhex("112233445566222233445566")
 
 
-def reply(fw=(10, 16), size=(config.W, config.CARD_H), index=0) -> bytes:
+def reply(fw=(10, 16), size=(config.W, config.CARD_H), index=0, uptime_ms=None) -> bytes:
     r = bytearray(KUBOTA_REPLY)
+    if uptime_ms is not None:
+        r[59:63] = uptime_ms.to_bytes(4, "big")
     r[15], r[16] = fw
     r[34:36] = size[0].to_bytes(2, "big")
     r[36:38] = size[1].to_bytes(2, "big")
@@ -291,6 +293,82 @@ def test_brightness_change_resends_last_frame():
         drv.set_brightness(0.25)
         assert wait_for(lambda: frames_of(sock)[-1][1] == [cl.display_packet(64)])
         assert frames_of(sock)[-1][0][0] == cl.brightness_packet((64, 64, 64))
+    finally:
+        drv.close()
+
+
+def test_unchanged_picture_is_not_sent_again():
+    sock = FakeSocket(answer=reply())
+    drv = make_driver(sock)
+    drv.open()
+    try:
+        assert wait_for(lambda: drv.status()["receiver_found"])       # its firmware sets the levels: a re-send
+        still = np.full((config.H, config.W, 3), 7, np.uint8)
+        for _ in range(5):
+            drv.send(still)
+            time.sleep(0.03)
+        assert wait_for(lambda: drv.status()["held"] == 4)
+        assert len(frames_of(sock)) == 1 and drv.status()["holding"]
+        moved = still.copy()
+        moved[0, 0] = 9
+        drv.send(moved)
+        assert wait_for(lambda: len(frames_of(sock)) == 2) and not drv.status()["holding"]
+        drv.send_card(np.full((config.CARD_H, config.W, 3), 7, np.uint8))   # a card image is another picture
+        assert wait_for(lambda: len(frames_of(sock)) == 3)
+        drv.set_brightness(0.5)                                             # same picture, new levels: sent
+        assert wait_for(lambda: len(frames_of(sock)) == 4)
+        assert frames_of(sock)[-1][1] == [cl.display_packet(128)]
+    finally:
+        drv.close()
+
+
+def test_unchanged_pictures_are_all_sent_when_asked():
+    sock = FakeSocket(answer=reply())
+    s = OutputSettings(driver="colorlight", interface="fake0")
+    drv = cl.ColorlightDriver(s, options=cl.ColorlightOptions(sync_gap_ms=0.0, skip_unchanged=False),
+                              opener=lambda iface: sock)
+    drv.open()
+    try:
+        for _ in range(3):
+            drv.send(np.zeros((config.H, config.W, 3), np.uint8))
+            time.sleep(0.03)
+        assert wait_for(lambda: len(frames_of(sock)) == 3) and drv.status()["held"] == 0
+    finally:
+        drv.close()
+
+
+def test_restarted_card_gets_the_still_picture_again(monkeypatch):
+    monkeypatch.setattr(cl, "CHECK_SECONDS", 0.05)
+    sock = FakeSocket(answer=reply(uptime_ms=60_000))
+    drv = make_driver(sock)
+    drv.open()
+    try:
+        assert wait_for(lambda: drv.status()["receiver_found"])
+        still = np.full((config.H, config.W, 3), 7, np.uint8)
+        drv.send(still)
+        assert wait_for(lambda: len(frames_of(sock)) == 1)
+        time.sleep(0.2)                                      # asked again meanwhile, same card: nothing re-sent
+        assert len(frames_of(sock)) == 1
+        sock.answer = reply(uptime_ms=500)                   # power-cycled: its uptime starts over
+        assert wait_for(lambda: len(frames_of(sock)) == 2)
+        assert frames_of(sock)[1] == frames_of(sock)[0]
+        drv.send(still)                                      # and it is held again after that
+        assert wait_for(lambda: drv.status()["held"] == 1) and len(frames_of(sock)) == 2
+    finally:
+        drv.close()
+
+
+def test_link_back_up_resends_the_picture():
+    sock = FakeSocket(answer=reply())
+    drv = make_driver(sock)
+    drv.open()
+    try:
+        drv.send(np.zeros((config.H, config.W, 3), np.uint8))
+        assert wait_for(lambda: len(frames_of(sock)) == 1)
+        sock._link = (False, None)
+        assert wait_for(lambda: drv.status()["link"] is False)
+        sock._link = (True, 1000)
+        assert wait_for(lambda: len(frames_of(sock)) == 2, timeout=4.0)
     finally:
         drv.close()
 

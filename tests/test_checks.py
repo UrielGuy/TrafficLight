@@ -146,6 +146,14 @@ def test_still_looking_for_the_receiver():
     assert by_id(setup_checks(COLORLIGHT, st, AUDIO_OK))["output.receiver"]["level"] == "info"
 
 
+def test_a_held_still_picture_is_explained():
+    st = {"driver": "colorlight", "ok": True, "error": None, "open": True, "link": True, "link_mbps": 1000,
+          "receiver": None, "problems": [], "detecting": True, "sent_fps": 0.0, "holding": True,
+          "interface_name": "eth1"}
+    c = by_id(setup_checks(COLORLIGHT, st, AUDIO_OK))["output.driver"]
+    assert c["level"] == "ok" and "still picture" in c["detail"]
+
+
 def test_receiver_configured_for_another_size():
     # 1376x688 is what the user's card reported before its LEDVision setup.
     c = driver_checks(FakeSocket(answer=reply(size=(1376, 688))), ready=lambda st: st["receiver_found"])

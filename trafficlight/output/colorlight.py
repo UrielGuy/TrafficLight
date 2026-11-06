@@ -23,6 +23,14 @@ display packet (twice for firmware 13 and later, as FPP does).
 send() (and send_card()) only copies the picture into a slot; a sender
 thread maps it, builds the packets in place and sends the newest one,
 dropping any it could not get to.
+
+A picture equal to the one the card shows is not sent again: each display
+packet swaps the card's two picture buffers, and the swap visibly disturbs
+its LED refresh (firmware 13.39 on the 5A-75B), so a still picture re-sent
+60 times a second flickers while the same picture sent once is steady.
+The card keeps showing the last picture without traffic. It is sent again
+after anything that may have lost it (brightness or mapping change, link
+back up, send failure, the card restarted: its uptime goes back).
 """
 from __future__ import annotations
 
@@ -45,6 +53,7 @@ from .rawsock_base import RawSocket, list_raw_interfaces, open_raw
 DST_MAC = bytes.fromhex("112233445566")
 SRC_MAC = bytes.fromhex("222233445566")
 TYPE_OFFSET = 12
+CHECK_SECONDS = 2.0      # how often a card that answered is asked again (notices a restart)
 
 TYPE_DISPLAY, DISPLAY_LEN = 0x01, 112
 TYPE_BRIGHTNESS, BRIGHTNESS_LEN = 0x0A, 77
@@ -205,6 +214,7 @@ class ColorlightOptions:
     brightness_mode: Literal["auto", "card", "software"] = "auto"
     white_balance: tuple[float, float, float] = (1.0, 1.0, 1.0)
     detect: bool = True
+    skip_unchanged: bool = True       # do not re-send a picture the card already shows (see the module doc)
     assumed_mbps: int = 1000          # link speed for timing when the OS does not report one
 
     @classmethod
@@ -249,6 +259,7 @@ class ColorlightOptions:
 class _Stats:
     frames: int = 0
     dropped: int = 0
+    held: int = 0                     # unchanged pictures not sent again
     send_ms: float = 0.0
     times: deque = field(default_factory=lambda: deque(maxlen=120))
 
@@ -278,6 +289,8 @@ class ColorlightDriver(OutputDriver):
         self._spare: dict[bool, np.ndarray | None] = {False: np.empty((config.H, config.W, 3), np.uint8), True: None}
         self._resend = False
         self._levels_dirty = True
+        self._card_current = False      # the card shows self._last as last sent
+        self._holding = False           # the newest picture was unchanged, so not sent
         self._stats = _Stats()
 
     # ---- contract
@@ -371,6 +384,7 @@ class ColorlightDriver(OutputDriver):
             "receiver": rec.to_json() if rec else None,
             "receiver_found": rec is not None,
             "sent_fps": round(fps, 1), "frames": s.frames, "dropped": s.dropped,
+            "held": s.held, "holding": self._holding,
             "send_ms": round(s.send_ms, 2), "packets_per_frame": self._packets_per_frame(),
             "brightness": self._brightness,
             "software_brightness": self._software_brightness(),
@@ -409,6 +423,13 @@ class ColorlightDriver(OutputDriver):
                     slot = np.empty(shape, np.uint8)
             np.copyto(slot, picture, casting="unsafe")
             self._pending = (card, slot)
+        self._wake.set()
+
+    def _lost_picture(self) -> None:
+        """The card may not show the last picture any more: send it again."""
+        self._card_current = False
+        with self._lock:
+            self._resend = self._last is not None
         self._wake.set()
 
     def _make_mapper(self, s: OutputSettings) -> Mapper:
@@ -490,18 +511,21 @@ class ColorlightDriver(OutputDriver):
                 self._link = sock.link()
                 if self._link[0] and was_up is False:
                     self._receiver, self._detect_tries, next_detect = None, 0, now
+                    self._lost_picture()
             self._poll_replies(sock)
             # Ask until a card answers, and keep asking while it reports the wrong size: its setup in
             # LEDVision can be fixed while the server runs.
             rec = self._receiver
-            if (self.options.detect and (rec is None or (rec.width, rec.height) != (config.W, config.CARD_H))
-                    and now >= next_detect and self._link[0] is not False):
+            # Once it answers right, keep asking now and then: a restarted card (uptime back) needs the picture
+            # again, which an unchanged picture would otherwise never bring.
+            if self.options.detect and now >= next_detect and self._link[0] is not False:
                 try:
                     sock.send(detect_packet(0))
                 except OSError:
                     pass
                 self._detect_tries += 1
-                next_detect = now + (0.5 if self._detect_tries < 3 else 3.0)
+                settled = rec is not None and (rec.width, rec.height) == (config.W, config.CARD_H)
+                next_detect = now + (CHECK_SECONDS if settled else 0.5 if self._detect_tries < 3 else 3.0)
             if self._enc.sync_repeat != self._sync_repeat():
                 self._build(sock)
             if not woke or self._stop.is_set():
@@ -509,18 +533,28 @@ class ColorlightDriver(OutputDriver):
             self._wake.clear()
             with self._lock:
                 picture = self._pending
+                same = False
                 if picture is not None:
                     self._pending = None
-                    if self._last is not None:
-                        self._spare[self._last[0]] = self._last[1]
+                    last = self._last
+                    if last is not None:
+                        same = last[0] == picture[0] and np.array_equal(last[1], picture[1])
+                        self._spare[last[0]] = last[1]
                     self._last = picture
                 elif self._resend:
                     picture = self._last
+                    self._card_current = False
                 self._resend = False
             if picture is None:
                 continue
+            if (same and self.options.skip_unchanged and self._card_current and not self._levels_dirty):
+                self._stats.held += 1
+                self._holding = True
+                continue
+            self._holding = False
             if self._link[0] is False:
                 self._stats.dropped += 1
+                self._card_current = False
                 continue
             if self._levels_dirty:
                 self._levels_dirty = False
@@ -528,8 +562,10 @@ class ColorlightDriver(OutputDriver):
             try:
                 self._send_frame(sock, picture, soft_lut)
                 self._send_problem = None
+                self._card_current = True
             except (OSError, OutputError) as e:
                 self._stats.dropped += 1
+                self._card_current = False
                 self._send_problem = problem("output.send", "Sending to the card failed", f"Sending failed: {e}",
                                              "The driver keeps retrying. If it goes on, check the adapter (a USB "
                                              "adapter may have been unplugged) and its cable.")
@@ -576,7 +612,10 @@ class ColorlightDriver(OutputDriver):
                 return
             info = parse_reply(data)
             if info is not None and info.index == 0:
-                changed = self._receiver is None or self._receiver.firmware_major != info.firmware_major
+                prev = self._receiver
+                changed = prev is None or prev.firmware_major != info.firmware_major
+                if prev is not None and info.uptime_s < prev.uptime_s:
+                    self._lost_picture()
                 self._receiver = info
                 if changed:
                     self._levels_dirty = True

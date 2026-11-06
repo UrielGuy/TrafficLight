@@ -50,8 +50,13 @@ def _output_checks(o: OutputSettings, st: dict[str, Any]) -> list[dict[str, Any]
         out.append(found["output.driver"])
     elif opened:
         fps = st.get("sent_fps")
-        out.append(check("output.driver", "ok", "LED output: Colorlight",
-                         f"Sending {fps:.0f} frames per second." if fps else "Open, waiting for frames."))
+        if st.get("holding"):
+            detail = "Showing a still picture: it is sent again only when it changes (re-sending it would flicker)."
+        elif fps:
+            detail = f"Sending {fps:.0f} frames per second."
+        else:
+            detail = "Open, waiting for frames."
+        out.append(check("output.driver", "ok", "LED output: Colorlight", detail))
     elif not found:
         error = st.get("error")
         if error and error != "not started":
