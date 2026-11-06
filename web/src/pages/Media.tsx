@@ -4,6 +4,7 @@ import { ApiError, api, mediaFileUrl, mediaThumbUrl, uploadMediaWithProgress } f
 import type { MediaItem, ShowTarget } from '../api/types';
 import { Dialog, Empty, Toggle } from '../components/ui';
 import { editNote, openCropTool } from '../media/CropTool';
+import { parseClock } from '../media/clocktime';
 import { mediaRes, useMedia } from '../state/app';
 import { confirmDialog } from '../state/confirm';
 import { formatSize, formatTime } from '../state/hooks';
@@ -201,27 +202,43 @@ function stageText(m: MediaItem): string {
 
 const QUALITIES = [360, 480, 720, 1080, 1440, 2160];
 
+const IMPORT_PREF = 'trafficlight.import';
+/** Quality and length limit of the last import: someone who wants 3 minutes of a 3 hour video wants that every time. */
+function readImportPref(): { quality: number; length: string } {
+  try {
+    const v = JSON.parse(localStorage.getItem(IMPORT_PREF) ?? '{}') ?? {};
+    return { quality: QUALITIES.includes(v.quality) ? v.quality : 1080, length: typeof v.length === 'string' ? v.length : '' };
+  } catch {
+    return { quality: 1080, length: '' };
+  }
+}
+
 /** Fetch a video from a link (YouTube and the like, or a direct file link). */
 function ImportForm({ onImported }: { onImported: (m: MediaItem) => void }) {
   const [url, setUrl] = useState('');
-  const [more, setMore] = useState(false);
-  const [quality, setQuality] = useState(1080);
+  const [quality, setQuality] = useState(() => readImportPref().quality);
   const [start, setStart] = useState('');
-  const [length, setLength] = useState('');
+  const [length, setLength] = useState(() => readImportPref().length);
   const [busy, setBusy] = useState(false);
+  const s = parseClock(start);
+  const l = parseClock(length);
+  const badStart = s !== null && isNaN(s);
+  const badLength = l !== null && (isNaN(l) || l <= 0);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     const u = url.trim();
-    if (!u) return;
+    if (!u || badStart || badLength) return;
     setBusy(true);
-    const s = parseFloat(start);
-    const l = parseFloat(length);
-    const m = await attempt(() => api.importMedia({
-      url: u, max_height: quality, start: isFinite(s) && s > 0 ? s : 0, duration: isFinite(l) && l > 0 ? l : null,
-    }));
+    try {
+      localStorage.setItem(IMPORT_PREF, JSON.stringify({ quality, length: length.trim() }));
+    } catch {
+      /* ignore */
+    }
+    const m = await attempt(() => api.importMedia({ url: u, max_height: quality, start: s ?? 0, duration: l }));
     setBusy(false);
     if (m) {
       setUrl('');
+      setStart('');
       onImported(m);
     }
   };
@@ -230,21 +247,26 @@ function ImportForm({ onImported }: { onImported: (m: MediaItem) => void }) {
       <div className="import-row">
         <input type="url" inputMode="url" placeholder="Paste a video link (YouTube, a file…)" value={url} onChange={(e) => setUrl(e.target.value)}
           aria-label="Video link" data-testid="import-url" />
-        <button className="primary" type="submit" disabled={busy || !url.trim()} data-testid="import-go">{busy ? 'Starting…' : 'Import'}</button>
+        <button className="primary" type="submit" disabled={busy || !url.trim() || badStart || badLength} data-testid="import-go">{busy ? 'Starting…' : 'Import'}</button>
       </div>
-      <button type="button" className="link-btn small" onClick={() => setMore(!more)} aria-expanded={more}>{more ? 'Fewer options' : 'Options: quality, part of the video'}</button>
-      {more && (
-        <div className="import-opts">
-          <label>Up to
-            <select value={quality} onChange={(e) => setQuality(Number(e.target.value))}>
-              {QUALITIES.map((q) => <option key={q} value={q}>{q}p</option>)}
-            </select>
-          </label>
-          <label>From (s) <input type="number" min={0} step={0.1} value={start} onChange={(e) => setStart(e.target.value)} placeholder="0" /></label>
-          <label>Length (s) <input type="number" min={0} step={0.1} value={length} onChange={(e) => setLength(e.target.value)} placeholder="all" /></label>
-          <span className="muted small">Only that part is downloaded; it becomes the trim, which the crop tool can change within it.</span>
-        </div>
-      )}
+      <div className="import-opts">
+        <label>Max length
+          <input type="text" inputMode="decimal" value={length} onChange={(e) => setLength(e.target.value)} placeholder="whole video"
+            aria-invalid={badLength} title="Download no more than this: 3:00, 90 or 1:30:00. Empty: the whole video." data-testid="import-length" />
+        </label>
+        <label>Start at
+          <input type="text" inputMode="decimal" value={start} onChange={(e) => setStart(e.target.value)} placeholder="0:00"
+            aria-invalid={badStart} title="Where in the video to start: 1:30 or 90" data-testid="import-start" />
+        </label>
+        <label>Up to
+          <select value={quality} onChange={(e) => setQuality(Number(e.target.value))} data-testid="import-quality">
+            {QUALITIES.map((q) => <option key={q} value={q}>{q}p</option>)}
+          </select>
+        </label>
+        {badStart || badLength
+          ? <span className="error small" role="alert">Write times as 3:00, 90 or 1:30:00</span>
+          : <span className="muted small">{l ? `Only ${formatTime(l)} from ${formatTime(s ?? 0)} is downloaded.` : 'Set a max length to download only part of a long video.'}</span>}
+      </div>
     </form>
   );
 }

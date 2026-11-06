@@ -19,7 +19,7 @@ import Inspector from './Inspector';
 import Palette from './Palette';
 import { clock, EditorSession, editorFeed, loopStore, problemListStore, sessionStore } from './session';
 import Timeline, { Popover } from './Timeline';
-import { findClip } from './model';
+import { findClip, placeName } from './model';
 import Transport from './Transport';
 import { setSnap, timelineApi, viewStore } from './view';
 import './editor.css';
@@ -186,7 +186,7 @@ function ProblemsButton() {
                 select([p.clip_id]);
                 if (loc) timelineApi.current?.reveal(loc.clip.start);
               }}>
-                <strong>{loc ? `${loc.track.name}, ${loc.clip.start.toFixed(2)} s` : 'Clip'}</strong>
+                <strong>{loc ? `${placeName(loc.track)}, ${loc.clip.start.toFixed(2)} s` : 'Clip'}</strong>
                 <span>{p.message}</span>
               </button>
             );

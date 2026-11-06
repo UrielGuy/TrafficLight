@@ -408,8 +408,8 @@ class Player:
         alpha: Any = None
         if img.shape[2] == 4:
             alpha = img[..., 3].astype(np.float32) * (1.0 / 255.0)
-        mask = clip.mask if clip.mask is not None else (face is not None)
-        if mask:
+        # Only the round lights are seen on the sign, so a clip is cut to them unless it says otherwise.
+        if clip.mask is None or clip.mask:
             m = face_mask() if face is not None else sign_mask()
             alpha = m if alpha is None else alpha * m
         if k < 1.0:

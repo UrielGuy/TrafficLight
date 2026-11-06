@@ -310,7 +310,7 @@ try {
   check((await T.edit()).shape === 'light' && (await T.edit()).rotate === 90, 'the tool opens with the saved edit');
   await T.shape('Whole sign');
   await page.click('[data-testid=crop-reset]');         // the largest whole-sign box, upright, the whole video
-  await T.circles(false);
+  await T.circles(true);                                 // a whole-sign clip's default mask: the three circles
   await page.waitForFunction(() => !document.querySelector('video.crop-source').seeking);
   await page.waitForTimeout(400);
   const copyEdit = await T.edit();
@@ -329,7 +329,7 @@ try {
     const c2 = compare(shownSign.data, srv);
     console.log(`        preview vs server frame: mean difference ${c2.mad.toFixed(1)} / 255, correlation ${c2.corr.toFixed(3)} (spread ${c2.sd.toFixed(0)})`);
     await dumpPair(page, shownSign.data, srv, 128, 384, `${SHOTS}/crop-compare-sign.png`);
-    check(c2.mad < 14 && (c2.flat || c2.corr > 0.9), 'the whole sign shows what the preview showed (no circles)');
+    check(c2.mad < 14 && (c2.flat || c2.corr > 0.9), 'the whole sign shows what the preview showed (circles)');
   }
 
   // ---------------------------------------------------------------- import from a link

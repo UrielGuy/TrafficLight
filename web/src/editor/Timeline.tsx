@@ -2,27 +2,27 @@
 // interaction on them (move, trim, marquee, scrub, loop range, palette drops,
 // zoom). Drags draw into the drag layer only; the document changes once, on drop.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ClipType, MediaItem, Settings, Target, Track } from '../api/types';
+import type { Clip, ClipType, MediaItem, Settings, Target, Track } from '../api/types';
 import { useCatalog, useMedia, useSettings } from '../state/app';
 import { confirmDialog } from '../state/confirm';
 import { useStore } from '../state/store';
-import { accepts, dropItem } from './actions';
+import { accepts, dropItem, rowTakes } from './actions';
 import { gridLines } from './beats';
-import { itemDuration, makeClip, offsetTypes, trackColor, typeMap, type PaletteItem, type TypeMap } from './clipinfo';
+import { itemDuration, itemWhole, makeClip, offsetTypes, trackColor, typeMap, type PaletteItem, type TypeMap } from './clipinfo';
 import { ClipView } from './ClipView';
 import { docStore, draft, edit, select, setInsert, toggleSelect, useDoc } from './doc';
 import { dragItemStore, dragView, dropTarget, EMPTY_DRAG, type Ghost } from './dnd';
 import { drawGrid, drawRuler } from './draw';
 import { clock, loopStore, problemsStore, sessionStore, type EditorSession } from './session';
 import {
-  addTrack, applyMoves, applyTrim, clipEnd, findClip, moveTrack, placeNew, planMove, removeTrack, snapBlock, snapPoints,
-  snapTarget, TARGET_NAMES, trim, updateClip, updateTrack, type Located, type Move, type SnapContext,
+  addTrack, applyMoves, applyTrim, clipEnd, findClip, isLight, moveTrack, placeNew, planMove, removeTrack, rowRange, rowTracks,
+  snapBlock, snapPoints, snapTarget, TARGET_NAMES, trim, trimFloor, updateClip, updateTrack, wholeTrack, type Located, type Move, type SnapContext,
 } from './model';
 import { MAX_PPS, MIN_PPS, timelineApi, viewStore } from './view';
 
 const RULER_H = 36;
 /** Track names that already say what the track is (no second line needed). */
-const DEFAULT_NAMES = ['Whole sign', 'Top', 'Middle', 'Bottom', 'Audio', ...Object.values(TARGET_NAMES)];
+const DEFAULT_NAMES = ['Top', 'Middle', 'Bottom', 'Audio', ...Object.values(TARGET_NAMES)];
 const DRAG_START_PX = 4;
 
 type Gesture =
@@ -42,6 +42,8 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
   const ROW_H = narrow ? 50 : 56;
   const { pps, snap, grid } = useStore(viewStore);
   const tracks = useDoc((s) => s.history.present.tracks);
+  const rows = useMemo(() => rowTracks(tracks), [tracks]);
+  const nLights = useMemo(() => rows.filter((t) => isLight(t.target)).length, [rows]);
   const bpm = useDoc((s) => s.history.present.bpm);
   const offset = useDoc((s) => s.history.present.beat_offset);
   const duration = useDoc((s) => s.history.present.duration);
@@ -69,8 +71,8 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
   const contentW = Math.max(viewW - HEAD_W, (end + 8) * pps);
 
   // Latest values for event handlers and the animation loop (they are created once).
-  const L = useRef({ pps, snap, grid, tracks, bpm, offset, duration, loop, playing, HEAD_W, ROW_H, types, end, viewW });
-  L.current = { pps, snap, grid, tracks, bpm, offset, duration, loop, playing, HEAD_W, ROW_H, types, end, viewW };
+  const L = useRef({ pps, snap, grid, rows, nLights, bpm, offset, duration, loop, playing, HEAD_W, ROW_H, types, end, viewW });
+  L.current = { pps, snap, grid, rows, nLights, bpm, offset, duration, loop, playing, HEAD_W, ROW_H, types, end, viewW };
 
   // ---------------------------------------------------------------- geometry
   const xToT = useCallback((cx: number) => {
@@ -247,6 +249,12 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
     return { points: snapPoints(s, exclude, extra), grid: gridLines(v.grid, v.pps, s.bpm, s.beat_offset), threshold: 8 / v.pps };
   }, []);
 
+  /** A ghost on a track's row, or across the light rows for a whole-sign clip. */
+  const ghostAt = useCallback((clip: Clip, track: Track): Ghost => {
+    const v = L.current;
+    return track.target === 'all' ? { clip, row: 0, span: Math.max(1, v.nLights), whole: true } : { clip, row: v.rows.findIndex((t) => t.id === track.id), span: 1, whole: false };
+  }, []);
+
   const markMoving = (ids: string[], on: boolean) => {
     const sc = scroller.current;
     if (!sc) return;
@@ -268,16 +276,15 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
         dt = r.start - g.start;
         snapAt = r.at;
       }
-      const rows = clamp(rowAt(p.y), 0, s.tracks.length - 1) - g.row;
-      const plan = planMove(s, g.ids, dt, rows, accepts);
+      const dRows = clamp(rowAt(p.y), 0, v.rows.length - 1) - g.row;
+      const plan = planMove(s, g.ids, dt, dRows, accepts);
       g.plan = plan;
       const ghosts: Ghost[] = [];
       for (const id of g.ids) {
         const loc = findClip(s, id);
         if (!loc) continue;
         const m = plan?.find((x) => x.id === id);
-        const row = m ? s.tracks.findIndex((t) => t.id === m.toTrack) : loc.trackIndex;
-        ghosts.push({ clip: { ...loc.clip, start: m ? m.start : loc.clip.start + dt }, row });
+        ghosts.push(ghostAt({ ...loc.clip, start: m ? m.start : loc.clip.start + dt }, m ? s.tracks.find((t) => t.id === m.toTrack)! : loc.track));
       }
       const landed = plan ? Math.abs((plan.find((m) => m.id === g.ids[0])?.start ?? NaN) - (findClip(s, g.ids[0])!.clip.start + dt)) < 1e-6 : false;
       dragView.set({ ...EMPTY_DRAG, ghosts, snapAt: landed ? snapAt : null, invalid: !plan });
@@ -292,12 +299,11 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
           if (st.magnet) snapAt = st.t;
         }
       }
-      const tr = s.tracks[g.loc.trackIndex];
-      const r = trim(tr, g.loc.clip, g.edge, to, g.minStart);
+      const r = trim(s, g.loc.track, g.loc.clip, g.edge, to, g.minStart);
       g.result = r;
       const edgeAt = g.edge === 'start' ? r.start : r.start + r.duration;
       const clip = applyTrim(g.loc.clip, r.start, r.duration, g.withOffset);
-      dragView.set({ ...EMPTY_DRAG, ghosts: [{ clip, row: g.loc.trackIndex }], snapAt: snapAt !== null && Math.abs(edgeAt - snapAt) < 1e-6 ? snapAt : null });
+      dragView.set({ ...EMPTY_DRAG, ghosts: [ghostAt(clip, g.loc.track)], snapAt: snapAt !== null && Math.abs(edgeAt - snapAt) < 1e-6 ? snapAt : null });
     } else if (g.kind === 'marquee') {
       const sc = scroller.current!;
       const r = sc.getBoundingClientRect();
@@ -310,16 +316,18 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
       const ra = Math.floor(Math.min(g.cy0, cy1) / v.ROW_H);
       const rb = Math.floor(Math.max(g.cy0, cy1) / v.ROW_H);
       const ids = new Set(g.base);
-      s.tracks.forEach((t, i) => {
-        if (i < ra || i > rb) return;
-        for (const c of t.clips) if (c.start < tb && clipEnd(c) > ta) ids.add(c.id);
-      });
+      const hit = (c: Clip) => c.start < tb && clipEnd(c) > ta && ids.add(c.id);
+      v.rows.forEach((t, i) => i >= ra && i <= rb && t.clips.forEach(hit));
+      // whole-sign blocks cover the light rows
+      if (ra < v.nLights && rb >= 0) for (const t of s.tracks) if (t.target === 'all') t.clips.forEach(hit);
       select([...ids]);
     } else if (g.kind === 'track') {
-      g.to = clamp(rowAt(p.y), 0, s.tracks.length - 1);
+      const t = v.rows.find((x) => x.id === g.id);
+      const [lo, hi] = t ? rowRange(v.rows, t.target) : [0, 0];
+      g.to = clamp(rowAt(p.y), lo, hi);
       dragView.set({ ...EMPTY_DRAG, trackTo: g.to });
     }
-  }, [xToT, rowAt]);
+  }, [xToT, rowAt, ghostAt]);
 
   // Scrolls while a drag is near the left or right edge.
   const autoscroll = useCallback(() => {
@@ -377,7 +385,7 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
       sc.setPointerCapture(e.pointerId);
       e.preventDefault();
     } else if (target.closest('.tl-lane')) {
-      const track = L.current.tracks[rowAt(e.clientY)];
+      const track = L.current.rows[rowAt(e.clientY)];
       gesture.current = { kind: 'pending-empty', x0: e.clientX, y0: e.clientY, trackId: track?.id ?? null, t: xToT(e.clientX), additive: mod };
       if (e.pointerType !== 'touch') {
         sc.setPointerCapture(e.pointerId);
@@ -398,13 +406,13 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
       if (g.edge) {
         select([g.id]);
         const withOffset = offsetTypes(L.current.types).has(loc.clip.type);
-        const off = withOffset ? Number(loc.clip.params.offset ?? 0) || 0 : 0;
-        gesture.current = { kind: 'trim', loc, edge: g.edge, t0: xToT(g.x0), minStart: withOffset ? loc.clip.start - off : 0, withOffset, ctx: snapCtx(new Set([g.id])), result: null };
+        gesture.current = { kind: 'trim', loc, edge: g.edge, t0: xToT(g.x0), minStart: withOffset ? trimFloor(loc.clip) : 0, withOffset, ctx: snapCtx(new Set([g.id])), result: null };
         markMoving([g.id], true);
       } else {
         const sel = docStore.get()!.selection;
         const ids = sel.includes(g.id) ? [g.id, ...sel.filter((x) => x !== g.id)] : [g.id];
-        gesture.current = { kind: 'move', ids, start: loc.clip.start, dur: loc.clip.duration, row: loc.trackIndex, t0: xToT(g.x0), ctx: snapCtx(new Set(ids)), plan: null };
+        // rows are counted from where the pointer went down (a whole-sign block spans several)
+        gesture.current = { kind: 'move', ids, start: loc.clip.start, dur: loc.clip.duration, row: rowAt(g.y0), t0: xToT(g.x0), ctx: snapCtx(new Set(ids)), plan: null };
         markMoving(ids, true);
       }
       autoscroll();
@@ -475,7 +483,7 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
   const startTrackDrag = useCallback((id: string, e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const idx = L.current.tracks.findIndex((t) => t.id === id);
+    const idx = L.current.rows.findIndex((t) => t.id === id);
     gesture.current = { kind: 'track', id, to: idx };
     last.current = { x: e.clientX, y: e.clientY, shift: false };
     scroller.current!.setPointerCapture(e.pointerId);
@@ -488,14 +496,14 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
     if (!sc) return null;
     const r = sc.getBoundingClientRect();
     if (x < r.left + L.current.HEAD_W || x > r.right || y < r.top || y > r.bottom) return null;
-    const row = rowAt(y);
-    const track = draft().tracks[row];
-    if (!track || !accepts(item.type.type, track.target)) return null;
+    const track = L.current.rows[rowAt(y)];
+    if (!track || !rowTakes(item, track)) return null;
     const dur = itemDuration(item);
     let t = Math.max(0, xToT(x));
     if (L.current.snap) t = snapBlock(t, dur, snapCtx(new Set())).start;
     t = Math.max(0, t);
-    return { track, row, t, place: placeNew(track, t, dur) };
+    const dest = itemWhole(item) ? wholeTrack(draft()) : { set: draft(), track };
+    return { track, dest: dest.track, t, place: placeNew(dest.set, dest.track, t, dur) };
   }, [rowAt, xToT, snapCtx]);
 
   const showDrop = useCallback((item: PaletteItem, x: number, y: number): boolean => {
@@ -506,9 +514,9 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
     }
     const clip = makeClip(item, d.place.start, d.place.duration);
     clip.id = 'drop';
-    dragView.set({ ...EMPTY_DRAG, ghosts: [{ clip, row: d.row }] });
+    dragView.set({ ...EMPTY_DRAG, ghosts: [ghostAt(clip, d.dest)] });
     return true;
-  }, [computeDrop]);
+  }, [computeDrop, ghostAt]);
 
   useEffect(() => {
     dropTarget.current = {
@@ -608,18 +616,25 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
         <div ref={scroller} className={`tl-scroll ${dragItem ? 'palette-drag' : ''}`} onScroll={redraw}
           onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={cancelGesture}
           onDoubleClick={(e) => (e.target as HTMLElement).closest('[data-clip]') && onInspect()}>
-          <div className="tl-inner" data-pps={pps} style={{ width: HEAD_W + contentW, height: Math.max(tracks.length, 1) * ROW_H }}>
-            {tracks.map((t, i) => {
+          <div className="tl-inner" data-pps={pps} style={{ width: HEAD_W + contentW, height: Math.max(rows.length, 1) * ROW_H }}>
+            {rows.map((t, i) => {
               const sel = t.clips.filter((c) => selSet.has(c.id)).map((c) => c.id).join(',');
-              const drop = dragItem ? (accepts(dragItem.type.type, t.target) ? 'drop-ok' : 'drop-no') : '';
+              const drop = dragItem ? (rowTakes(dragItem, t) ? 'drop-ok' : 'drop-no') : '';
+              const [lo, hi] = rowRange(rows, t.target);
               return (
-                <TrackRow key={t.id} track={t} index={i} count={tracks.length} pps={pps} headW={HEAD_W} rowH={ROW_H} contentW={contentW}
+                <TrackRow key={t.id} track={t} index={i} first={i === lo} last={i === hi} lastLight={isLight(t.target) && nLights === 1}
+                  pps={pps} headW={HEAD_W} rowH={ROW_H} contentW={contentW}
                   selKey={sel} problems={problems} types={types} media={media} color={color(t.target)} settings={settings}
                   drop={drop} insertT={insert?.trackId === t.id ? insert.t : null} onGrip={startTrackDrag} />
               );
             })}
-            {!tracks.length && <div className="tl-empty" style={{ left: HEAD_W }}>No tracks. Use “+ Track” to add one.</div>}
-            <DragLayer headW={HEAD_W} rowH={ROW_H} pps={pps} types={types} media={media} settings={settings} />
+            {tracks.filter((t) => t.target === 'all').map((t) => t.clips.map((c) => (
+              <ClipView key={c.id} clip={c} pps={pps} selected={selSet.has(c.id)} problems={problems.get(c.id)} type={types.get(c.type)}
+                media={typeof c.params.media === 'string' ? media.get(c.params.media) : undefined} trackColor={color('all')}
+                whole dim={t.muted} top={4} height={Math.max(1, nLights) * ROW_H - 8} offsetX={HEAD_W} />
+            )))}
+            {!rows.length && <div className="tl-empty" style={{ left: HEAD_W }}>No tracks. Use “+ Track” to add one.</div>}
+            <DragLayer headW={HEAD_W} rowH={ROW_H} pps={pps} types={types} media={media} settings={settings} rows={rows} />
           </div>
         </div>
       </div>
@@ -628,7 +643,7 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
       </div>
       {addMenu && (
         <Popover x={addMenu.x} y={addMenu.y} onClose={() => setAddMenu(null)}>
-          {(['face0', 'face1', 'face2', 'all', 'audio'] as Target[]).map((tg) => (
+          {(['face0', 'face1', 'face2', 'audio'] as const).map((tg) => (
             <button key={tg} role="menuitem" onClick={() => {
               setAddMenu(null);
               edit((s) => addTrack(s, tg).set);
@@ -641,16 +656,18 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
 }
 
 // ---------------------------------------------------------------- pieces
-function DragLayer({ headW, rowH, pps, types, media, settings }: { headW: number; rowH: number; pps: number; types: TypeMap; media: Map<string, MediaItem>; settings: Settings | null }) {
+function DragLayer({ headW, rowH, pps, types, media, settings, rows }: {
+  headW: number; rowH: number; pps: number; types: TypeMap; media: Map<string, MediaItem>; settings: Settings | null; rows: Track[];
+}) {
   const v = useStore(dragView);
-  const tracks = draft().tracks;
   return (
     <>
       {v.ghosts.map((g) => {
         const m = typeof g.clip.params.media === 'string' ? media.get(g.clip.params.media) : undefined;
         return (
           <ClipView key={`ghost-${g.clip.id}`} clip={g.clip} pps={pps} selected={false} type={types.get(g.clip.type)} media={m}
-            trackColor={trackColor(tracks[g.row]?.target ?? 'all', settings)} ghost invalid={v.invalid} top={g.row * rowH + 4} offsetX={headW} />
+            trackColor={trackColor(g.whole ? 'all' : rows[g.row]?.target ?? 'all', settings)} ghost invalid={v.invalid} whole={g.whole}
+            top={g.row * rowH + 4} height={g.span * rowH - 8} offsetX={headW} />
         );
       })}
       {v.snapAt !== null && <div className="tl-snapline" style={{ left: headW + v.snapAt * pps }} />}
@@ -680,7 +697,11 @@ export function TrackMarker({ target, settings }: { target: Target; settings: Se
 interface RowProps {
   track: Track;
   index: number;
-  count: number;
+  /** First / last row of its group (lights, audio): how far it can move. */
+  first: boolean;
+  last: boolean;
+  /** The only light row: it stays, the whole-sign clips are drawn over it. */
+  lastLight: boolean;
   pps: number;
   headW: number;
   rowH: number;
@@ -696,11 +717,11 @@ interface RowProps {
   onGrip: (id: string, e: React.PointerEvent) => void;
 }
 
-const TrackRow = memo(function TrackRow({ track, index, count, pps, headW, rowH, contentW, selKey, problems, types, media, color, settings, drop, insertT, onGrip }: RowProps) {
+const TrackRow = memo(function TrackRow({ track, index, first, last, lastLight, pps, headW, rowH, contentW, selKey, problems, types, media, color, settings, drop, insertT, onGrip }: RowProps) {
   const sel = useMemo(() => new Set(selKey ? selKey.split(',') : []), [selKey]);
   return (
     <div className={`tl-row ${track.muted ? 'muted' : ''} ${drop} ${track.target === 'audio' ? 'audio' : ''}`} style={{ height: rowH, ['--track-color' as string]: color }}>
-      <TrackHead track={track} index={index} count={count} width={headW} settings={settings} onGrip={onGrip} />
+      <TrackHead track={track} index={index} first={first} last={last} lastLight={lastLight} width={headW} settings={settings} onGrip={onGrip} />
       <div className="tl-lane" style={{ width: contentW }}>
         {track.clips.map((c) => (
           <ClipView key={c.id} clip={c} pps={pps} selected={sel.has(c.id)} problems={problems.get(c.id)} type={types.get(c.type)}
@@ -712,7 +733,9 @@ const TrackRow = memo(function TrackRow({ track, index, count, pps, headW, rowH,
   );
 });
 
-function TrackHead({ track, index, count, width, settings, onGrip }: { track: Track; index: number; count: number; width: number; settings: Settings | null; onGrip: (id: string, e: React.PointerEvent) => void }) {
+function TrackHead({ track, index, first, last, lastLight, width, settings, onGrip }: {
+  track: Track; index: number; first: boolean; last: boolean; lastLight: boolean; width: number; settings: Settings | null; onGrip: (id: string, e: React.PointerEvent) => void;
+}) {
   const [renaming, setRenaming] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [name, setName] = useState(track.name);
@@ -752,10 +775,10 @@ function TrackHead({ track, index, count, width, settings, onGrip }: { track: Tr
       {menu && (
         <Popover x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
           <button role="menuitem" onClick={() => { setMenu(null); setName(track.name); setRenaming(true); }}>Rename</button>
-          <button role="menuitem" disabled={index === 0} onClick={() => { setMenu(null); edit((s) => moveTrack(s, track.id, index - 1)); }}>Move up</button>
-          <button role="menuitem" disabled={index === count - 1} onClick={() => { setMenu(null); edit((s) => moveTrack(s, track.id, index + 1)); }}>Move down</button>
-          <button role="menuitem" onClick={() => { setMenu(null); edit((s) => addTrack(s, track.target, index + 1).set); }}>Add a {TARGET_NAMES[track.target].toLowerCase()} track below</button>
-          <button role="menuitem" className="danger-text" onClick={remove}>Delete track</button>
+          <button role="menuitem" disabled={first} onClick={() => { setMenu(null); edit((s) => moveTrack(s, track.id, index - 1)); }}>Move up</button>
+          <button role="menuitem" disabled={last} onClick={() => { setMenu(null); edit((s) => moveTrack(s, track.id, index + 1)); }}>Move down</button>
+          <button role="menuitem" onClick={() => { setMenu(null); edit((s) => addTrack(s, track.target as Exclude<Target, 'all'>, index + 1).set); }}>Add a {TARGET_NAMES[track.target].toLowerCase()} track below</button>
+          <button role="menuitem" className="danger-text" onClick={remove} disabled={lastLight} title={lastLight ? 'Whole-sign clips are drawn over the light tracks: keep one' : undefined}>Delete track</button>
         </Popover>
       )}
     </div>

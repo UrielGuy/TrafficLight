@@ -119,6 +119,13 @@ main:has(> .editor) { max-width: none; padding: 0; display: flex; flex-direction
 .clip.moving { opacity: .3; }
 .clip.ghost { pointer-events: none; bottom: auto; height: calc(var(--row-h) - 8px); z-index: 5; box-shadow: 0 6px 18px #000b; border-color: var(--accent); border-style: dashed; }
 .clip.ghost.invalid { border-color: var(--bad); background: rgba(255, 97, 89, .2); }
+/* whole-sign clips: one block over the light rows, above the clips of those rows */
+.clip.whole { bottom: auto; z-index: 3; }
+.clip.whole.sel { z-index: 4; }
+.clip.whole.ghost { z-index: 5; }
+.clip.dim { opacity: .4; filter: grayscale(.6); }
+.clip-whole { flex: none; display: inline-flex; flex-direction: column; gap: 1px; padding: 2px; border-radius: 3px; background: #000a; }
+.clip-whole i { width: 4px; height: 4px; border-radius: 50%; background: #fff; display: block; }
 .clip-thumb { position: absolute; inset: 0; background-size: auto 100%; background-repeat: repeat-x; background-position: left center; opacity: .5; }
 .clip-wave { position: absolute; left: 0; bottom: 0; width: 100%; height: 72%; pointer-events: none; }
 .clip-wave path { fill: hsl(var(--hue) 55% 68% / .5); }
@@ -179,6 +186,8 @@ main:has(> .editor) { max-width: none; padding: 0; display: flex; flex-direction
 .insp input[type=number].num { width: 5.5rem; padding: 0 8px; }
 .insp select { padding: 0 8px; }
 .numctl { display: flex; align-items: center; gap: 8px; }
+.speedctl { margin-top: 4px; display: inline-flex; }
+.speedctl button { min-width: 44px; }
 .numctl input[type=range] { height: 30px; }
 .numval { width: 3rem; text-align: right; font-variant-numeric: tabular-nums; font-size: .85rem; }
 .tap-btn { min-width: 64px; font-weight: 600; }
@@ -191,7 +200,13 @@ main:has(> .editor) { max-width: none; padding: 0; display: flex; flex-direction
 .colorpick { border: 1px solid var(--border); border-radius: 8px; background: var(--surface2); cursor: pointer; font-variant-numeric: tabular-nums; }
 .colorpick input[type=color] { width: 20px; height: 20px; padding: 0; border: 0; background: none; border-radius: 4px; cursor: pointer; }
 .mediactl { display: flex; gap: 6px; align-items: center; }
-.insp-crop { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 4px 0; }
+.insp-crop { display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap; padding: 4px 0; }
+.insp-place { display: flex; gap: 12px; align-items: flex-start; }
+.insp-place-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.insp-shows { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.clip-pic { flex: none; display: block; background: #000; border-radius: 6px; box-shadow: 0 0 0 1px var(--border); }
+.clip-pic.light { width: 112px; height: 112px; }
+.clip-pic.whole { width: 56px; height: 168px; }
 .mediactl img { width: 48px; height: 34px; object-fit: cover; border-radius: 4px; background: #000; flex: none; }
 .mediactl select { flex: 1; min-width: 0; }
 .insp-problems { border: 1px solid var(--bad); background: rgba(255, 97, 89, .1); border-radius: 8px; padding: 6px 10px; margin: 6px 0; font-size: .85rem; color: #ffc2bd; }

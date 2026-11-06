@@ -73,7 +73,26 @@ See `trafficlight/model.py` (authoritative). A **set** is a timeline:
   snapping in the editor and for the beat animations.
 * Clips on one track never overlap. A set may have any number of tracks per
   target (the editor can add and remove tracks).
-* `tracks[0]` is the top row of the editor and the top layer on the sign.
+* `tracks[0]` is the top layer on the sign (and the top row of the editor,
+  among the tracks that have a row; see below).
+
+**How the editor shows whole-sign clips.** A track with `target: "all"` has
+no row in the timeline. Its clips are drawn as one tall block over all light
+rows (every `faceN` track, extra ones included); the light rows are kept
+together above the audio rows (reordering and adding tracks enforce it; a
+stored order that mixes them is shown that way and rewritten only when the
+track order is edited). New whole-sign clips go on the first `all` track,
+which the editor creates as `tracks[0]` when a set has none. A whole-sign
+clip takes the three lights over: in the editor it may not overlap any clip
+on a light track or another whole-sign clip, and no light clip may be placed,
+moved or trimmed into its time (drops, moves, trims, paste, duplicate and the
+inspector's "Shows on: One light / Whole sign" switch all follow this). Audio
+tracks are not affected. The player does not enforce it: a set that breaks it
+(older data, hand-made, "Make a set") loads and plays as composited above,
+and only what the user moves next must fit. A library video or picture is
+added as a whole-sign clip when its crop shape is `sign`, or `free` and taller
+than √3:1. The editor clears `muted` on `all` tracks with its first edit (they
+have no mute button).
 
 ### Compositing (player)
 
@@ -86,8 +105,9 @@ For set time `t`:
    On each, find the clip covering `t` (`start <= t < start + duration`),
    render it into its box (128×128 at the light's rows for `faceN`, 128×384
    for `all`), then apply, in this order: the renderer's own alpha (if RGBA),
-   the mask (`Clip.mask`; default True on a light = anti-aliased disc of
-   radius `FACE_RADIUS`; on `all`, True = the three discs), `opacity`,
+   the mask (`Clip.mask`; default True = anti-aliased disc of radius
+   `FACE_RADIUS` on a light, the three discs on `all`, because only the
+   round lights are seen on the sign; False fills the whole box), `opacity`,
    `fade_in` / `fade_out` (linear), and alpha-blend over what is below.
 3. Collect an `AudioCue` from every active clip whose renderer returns one
    (audio tracks and videos with sound), set `key = clip.id`, multiply `gain`

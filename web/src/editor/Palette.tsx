@@ -8,7 +8,7 @@ import { useCatalog, useMedia } from '../state/app';
 import { formatTime } from '../state/hooks';
 import { createStore, useStore } from '../state/store';
 import { addItem } from './actions';
-import { CATEGORY_LABELS, CATEGORY_ORDER, categoryHue, itemLabel, MEDIA_CLIP_TYPE, type PaletteItem } from './clipinfo';
+import { CATEGORY_LABELS, CATEGORY_ORDER, categoryHue, itemLabel, itemWhole, MEDIA_CLIP_TYPE, type PaletteItem } from './clipinfo';
 import { dragItemStore, dropTarget } from './dnd';
 
 const ghostStore = createStore<{ item: PaletteItem; x: number; y: number; over: boolean } | null>(null);
@@ -17,9 +17,15 @@ const DRAG_PX = 6;
 function whereLabel(t: ClipType): string {
   const w = [];
   if (t.targets.includes('face')) w.push('light');
-  if (t.targets.includes('all')) w.push('sign');
+  if (t.targets.includes('all')) w.push('whole sign');
   if (t.targets.includes('audio')) w.push('audio');
   return w.join(' · ');
+}
+
+/** Where the dragged item can be dropped, for the hint next to the pointer. */
+function dropHint(item: PaletteItem): string {
+  if (itemWhole(item)) return 'drop on the lights (it covers all three)';
+  return item.type.targets.includes('audio') ? 'drop on an audio track' : 'drop on a light';
 }
 
 /** Pointer handling shared by all items: a short move starts a drag, otherwise it is a click. */
@@ -71,7 +77,7 @@ function DragGhost() {
   return (
     <div className={`pal-ghost ${g.over ? 'over' : ''}`} style={{ left: g.x + 12, top: g.y + 12, ['--hue' as string]: categoryHue(g.item.type.category) }}>
       {itemLabel(g.item)}
-      {!g.over && <span className="muted"> — drop on a {whereLabel(g.item.type).replace(/ · /g, ' or ')} track</span>}
+      {!g.over && <span className="muted"> — {dropHint(g.item)}</span>}
     </div>
   );
 }
@@ -98,7 +104,7 @@ export default function Palette() {
     <div className="palette">
       <input type="search" className="pal-search" placeholder="Search clips and media" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search the library" />
       <div className="pal-scroll">
-        <p className="pal-hint muted small">Drag onto a track, or click a track then an item.</p>
+        <p className="pal-hint muted small">Drag onto a track, or click a track then an item. Whole-sign items cover all three lights.</p>
         {groups.map((g) => (
           <section key={g.cat} className="pal-group">
             <h3>{CATEGORY_LABELS[g.cat] ?? g.cat}</h3>
@@ -144,7 +150,7 @@ function MediaRow({ m, type }: { m: MediaItem; type: ClipType | undefined }) {
       </span>
       <span className="pal-media-text">
         <span className="ellipsis">{m.name}</span>
-        <span className="muted small">{m.kind}{m.duration > 0 ? ` · ${formatTime(m.duration)}` : ''}{m.status === 'processing' ? ' · processing' : m.status === 'error' ? ' · error' : ''}</span>
+        <span className="muted small">{m.kind}{m.duration > 0 ? ` · ${formatTime(m.duration)}` : ''}{item && itemWhole(item) ? ' · whole sign' : ''}{m.status === 'processing' ? ' · processing' : m.status === 'error' ? ' · error' : ''}</span>
       </span>
     </button>
   );

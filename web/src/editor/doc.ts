@@ -5,7 +5,7 @@ import { useSyncExternalStore } from 'react';
 import type { SetData } from '../api/types';
 import { createStore } from '../state/store';
 import { commit, createHistory, redo as redoH, seal, undo as undoH, type History } from './history';
-import { allClipIds, type ClipboardItem } from './model';
+import { allClipIds, unmuteHidden, type ClipboardItem } from './model';
 
 export interface Insert {
   trackId: string;
@@ -47,7 +47,8 @@ export function loadDoc(set: SetData, saved: SetData = set) {
  */
 export function edit(fn: (s: SetData) => SetData, opts: { key?: string; select?: string[] } = {}) {
   const s = get();
-  const next = fn(s.history.present);
+  let next = fn(s.history.present);
+  if (next !== s.history.present) next = unmuteHidden(next);
   if (next === s.history.present && !opts.select) return;
   const history = next === s.history.present ? s.history : commit(s.history, next, { key: opts.key });
   docStore.set({ ...s, history, selection: opts.select ?? pruneSelection(s.selection, next) });

@@ -9,13 +9,14 @@ import { Toggle } from '../components/ui';
 import { useCatalog, useMedia, useSettings } from '../state/app';
 import { formatTime } from '../state/hooks';
 import { useStore } from '../state/store';
-import { accepts, copySelection, deleteSelection, duplicateSelection, fitDurationToClips, paste, splitAtPlayhead } from './actions';
+import { accepts, copySelection, deleteSelection, duplicateSelection, fitDurationToClips, paste, setWhole, splitAtPlayhead } from './actions';
 import { secondsPerBeat, tapTempo } from './beats';
 import { categoryHue, trackColor, typeMap } from './clipinfo';
+import ClipPicture from './ClipPicture';
 import { edit, getClipboard, sealHistory, select, useDoc } from './doc';
 import { clock, problemListStore, problemsStore } from './session';
 import { TrackMarker } from './Timeline';
-import { applyMoves, findClip, planMove, TARGET_NAMES, trim, updateClip } from './model';
+import { applyMoves, findClip, mediaSpeed, placeName, planMove, rowTracks, TARGET_NAMES, trim, updateClip } from './model';
 import { timelineApi } from './view';
 
 const fmt = (v: number) => String(Math.round(v * 1000) / 1000);
@@ -82,7 +83,7 @@ function MediaSelect({ spec, value, onChange, media }: { spec: ParamSpec; value:
   const cur = items.find((m) => m.id === value);
   return (
     <div className="mediactl">
-      {cur && cur.version > 0 && <img src={mediaThumbUrl(cur.id, cur.version)} alt="" />}
+      {cur && cur.version > 0 && cur.kind === 'audio' && <img src={mediaThumbUrl(cur.id, cur.version)} alt="" />}
       <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={spec.label}>
         <option value="">— choose {spec.media_kind ?? 'media'} —</option>
         {value && !cur && <option value={value}>Missing item ({value})</option>}
@@ -96,7 +97,12 @@ function MediaSelect({ spec, value, onChange, media }: { spec: ParamSpec; value:
   );
 }
 
-function ParamControl({ spec, value, onChange, faceColor, media }: { spec: ParamSpec; value: unknown; onChange: (v: unknown) => void; faceColor: string; media: MediaItem[] }) {
+/** Quick choices for a media clip's speed: the slider alone makes 0.5 or 2 hard to hit. */
+const SPEEDS = [0.25, 0.5, 1, 2, 4];
+
+function ParamControl({ spec, value, onChange, faceColor, media, help }: {
+  spec: ParamSpec; value: unknown; onChange: (v: unknown) => void; faceColor: string; media: MediaItem[]; help?: string;
+}) {
   const id = `p-${spec.key}`;
   const v = value ?? spec.default;
   let control: ReactNode;
@@ -120,6 +126,18 @@ function ParamControl({ spec, value, onChange, faceColor, media }: { spec: Param
           <NumberInput id={id} value={n} min={spec.min} max={spec.max} step={spec.step} int={int} onChange={onChange} label={spec.label} />
         </div>
       );
+      if (spec.key === 'speed' && !int) {
+        control = (
+          <>
+            {control}
+            <div className="segmented small speedctl" role="group" aria-label="Speed presets" data-testid="speed-presets">
+              {SPEEDS.filter((x) => (spec.min ?? 0) <= x && x <= (spec.max ?? Infinity)).map((x) => (
+                <button key={x} type="button" className={Math.abs(n - x) < 1e-6 ? 'active' : ''} onClick={() => { onChange(x); sealHistory(); }}>{x}×</button>
+              ))}
+            </div>
+          </>
+        );
+      }
       break;
     }
     case 'bool':
@@ -152,7 +170,7 @@ function ParamControl({ spec, value, onChange, faceColor, media }: { spec: Param
   }
   // colour choices, media pickers and long text get the whole width, label above
   const wide = spec.kind === 'color' || spec.kind === 'media' || spec.kind === 'text';
-  return <Row label={spec.label} help={spec.help} htmlFor={id} wide={wide}>{control}</Row>;
+  return <Row label={spec.label} help={help ?? spec.help} htmlFor={id} wide={wide}>{control}</Row>;
 }
 
 // ---------------------------------------------------------------- clip
@@ -173,7 +191,7 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
   const setDuration = (v: number) => edit((s) => {
     const loc = findClip(s, clip.id);
     if (!loc) return s;
-    const r = trim(loc.track, loc.clip, 'end', loc.clip.start + v);
+    const r = trim(s, loc.track, loc.clip, 'end', loc.clip.start + v);
     return updateClip(s, clip.id, (c) => ({ ...c, duration: r.duration, fade_in: Math.min(c.fade_in, r.duration), fade_out: Math.min(c.fade_out, r.duration) }));
   }, { key: `${clip.id}:duration` });
   const beats = clip.duration / secondsPerBeat(bpm);
@@ -183,6 +201,15 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
   const mediaItem = (clip.type === 'video' || clip.type === 'image') && typeof clip.params.media === 'string'
     ? media.find((m) => m.id === clip.params.media) : undefined;
   const canCrop = !!mediaItem && mediaItem.kind === clip.type && mediaItem.version > 0;
+  const whole = target === 'all';
+  // say it where the speed is set: a video's own sound stops at any other speed
+  const speed = mediaSpeed(clip);
+  const silenced = Math.abs(speed - 1) > 1e-3 && !!mediaItem?.has_audio && clip.params.sound !== false;
+  const speedHelp = clip.type !== 'video' ? undefined
+    : speed === 0 ? 'Shows one still frame, without sound'
+    : silenced ? 'Its own sound is silent at this speed: it plays only at 1×' : 'Its own sound plays only at 1×';
+  // types that may be on one light or on the whole sign can be switched between the two
+  const canSwitch = !!type && type.targets.includes('face') && type.targets.includes('all') && target !== 'audio';
   const cropMedia = () => {
     if (!mediaItem) return;
     const speed = Number(clip.params.speed ?? 1) || 1;
@@ -199,7 +226,9 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
         <span className="insp-cat" />
         <div className="grow">
           <div className="insp-title">{type?.label ?? clip.type}</div>
-          <div className="muted small insp-track"><TrackMarker target={target} settings={settings} /> {trackName} · {TARGET_NAMES[target]}</div>
+          <div className="muted small insp-track">
+            <TrackMarker target={target} settings={settings} /> {whole ? 'Whole sign: all three lights' : `${trackName} · ${TARGET_NAMES[target]}`}
+          </div>
         </div>
       </div>
       {type?.description && <p className="muted small insp-desc">{type.description}</p>}
@@ -209,17 +238,34 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
           {problems.map((p, i) => <div key={i}>{p}</div>)}
         </div>
       )}
+      {(canSwitch || canCrop) && (
+        <section className="insp-section insp-place">
+          {canCrop && <ClipPicture item={mediaItem!} whole={whole} fit={String(clip.params.fit ?? 'cover')} circles={clip.mask !== false} />}
+          <div className="insp-place-side">
+            {canSwitch && (
+              <div className="insp-shows">
+                <span className="insp-label">Shows on</span>
+                <div className="segmented small" role="group" aria-label="Shows on" data-testid="shows-on">
+                  <button type="button" className={whole ? '' : 'active'} aria-pressed={!whole} onClick={() => whole && setWhole(clip.id, false)}>One light</button>
+                  <button type="button" className={whole ? 'active' : ''} aria-pressed={whole} onClick={() => !whole && setWhole(clip.id, true)}>Whole sign</button>
+                </div>
+              </div>
+            )}
+            {canCrop && (
+              <div className="insp-crop">
+                <button onClick={cropMedia} data-testid="insp-crop">Crop &amp; trim…</button>
+                <span className="muted small">{mediaItem!.status === 'processing' ? 'Making the new crop…' : editNote(mediaItem!) ?? 'Whole picture'}</span>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
       {type && type.params.length > 0 && (
         <section className="insp-section">
           {type.params.map((spec) => (
-            <ParamControl key={spec.key} spec={spec} value={clip.params[spec.key]} onChange={(v) => setParam(spec.key, v)} faceColor={faceColor} media={media} />
+            <ParamControl key={spec.key} spec={spec} value={clip.params[spec.key]} onChange={(v) => setParam(spec.key, v)} faceColor={faceColor} media={media}
+              help={spec.key === 'speed' ? speedHelp : undefined} />
           ))}
-          {canCrop && (
-            <div className="insp-crop">
-              <button onClick={cropMedia} data-testid="insp-crop">Crop &amp; trim…</button>
-              <span className="muted small">{mediaItem!.status === 'processing' ? 'Making the new crop…' : editNote(mediaItem!) ?? 'Whole picture'}</span>
-            </div>
-          )}
         </section>
       )}
       <section className="insp-section">
@@ -241,10 +287,12 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
           </div>
         </Row>
         {!audio && (
-          <Row label="Mask" help={target === 'all' ? 'Default on the whole sign: no mask' : 'Default on a light: its circle'}>
-            <div className="segmented small">
-              {([[null, 'Default'], [true, target === 'all' ? 'Circles' : 'Circle'], [false, 'None']] as const).map(([v, l]) => (
-                <button key={String(v)} type="button" className={clip.mask === v ? 'active' : ''} onClick={() => set((c) => ({ ...c, mask: v }), 'mask')}>{l}</button>
+          <Row label="Mask" help={`Only the round lights are seen on the sign (the default). None fills the whole ${target === 'all' ? 'sign' : 'square'}.`}>
+            <div className="segmented small" data-testid="mask">
+              {/* the default (null) is the circles: stored as null so a later change of the default reaches it */}
+              {([[null, target === 'all' ? 'Circles' : 'Circle'], [false, 'None']] as const).map(([v, l]) => (
+                <button key={String(v)} type="button" className={(clip.mask !== false) === (v === null) ? 'active' : ''}
+                  onClick={() => set((c) => ({ ...c, mask: v }), 'mask')}>{l}</button>
               ))}
             </div>
           </Row>
@@ -277,9 +325,10 @@ function SetInspector() {
     if (bpm) patch({ bpm }, 'bpm');
   };
   const clips = s.tracks.reduce((n, t) => n + t.clips.length, 0);
+  const rows = rowTracks(s.tracks).length;
   return (
     <div className="insp">
-      <div className="insp-head"><div className="grow"><div className="insp-title">Set</div><div className="muted small">{s.tracks.length} tracks · {clips} clips</div></div></div>
+      <div className="insp-head"><div className="grow"><div className="insp-title">Set</div><div className="muted small">{rows} tracks · {clips} clips</div></div></div>
       <section className="insp-section">
         <Row label="Name" htmlFor="s-name"><input id="s-name" type="text" value={s.name} onChange={(e) => patch({ name: e.target.value }, 'name')} onBlur={sealHistory} /></Row>
         <Row label="Tempo (bpm)" htmlFor="s-bpm" help={tapBpm ? `Tapped ${tapBpm} bpm — keep tapping to refine` : 'Tap along to the music to set it'}>
@@ -316,7 +365,7 @@ function SetInspector() {
                   <button className="link-btn" onClick={() => {
                     select([p.clip_id]);
                     if (loc) timelineApi.current?.reveal(loc.clip.start);
-                  }}>{loc ? `${types.get(loc.clip.type)?.label ?? loc.clip.type} on ${loc.track.name}` : 'Clip'}</button>: {p.message}
+                  }}>{loc ? `${types.get(loc.clip.type)?.label ?? loc.clip.type} on ${placeName(loc.track)}` : 'Clip'}</button>: {p.message}
                 </li>
               );
             })}
@@ -326,6 +375,8 @@ function SetInspector() {
       <p className="muted small insp-tips">
         Click an empty spot on a track, then a library item, to add it there. Drag clips to move them, their edges to trim.
         Shift-click or drag a box to select several. Hold Shift while dragging to turn snapping off.
+        A whole-sign clip is one block over the three lights: while it plays, nothing else can be on them.
+        Videos and pictures cropped for the whole sign become one; “Shows on” switches a clip between one light and the whole sign.
       </p>
     </div>
   );

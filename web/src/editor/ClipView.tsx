@@ -3,6 +3,7 @@ import { api, mediaThumbUrl } from '../api/client';
 import type { Clip, ClipType, MediaItem, Peaks } from '../api/types';
 import { createStore, useStore } from '../state/store';
 import { categoryHue, clipSummary } from './clipinfo';
+import { mediaSpeed } from './model';
 
 // ---- waveform peaks, fetched once per media item
 const peaks = new Map<string, Peaks | null>();
@@ -85,16 +86,23 @@ export interface ClipViewProps {
   /** Rendered in the drag layer (a preview of where the clip goes). */
   ghost?: boolean;
   invalid?: boolean;
+  /** A whole-sign clip: one tall block over the light rows. */
+  whole?: boolean;
+  /** Drawn faded: its (hidden) track is muted. */
+  dim?: boolean;
   top?: number;
+  height?: number;
   offsetX?: number;
 }
 
-export const ClipView = memo(function ClipView({ clip, pps, selected, problems, type, media, trackColor, ghost, invalid, top, offsetX = 0 }: ClipViewProps) {
+export const ClipView = memo(function ClipView({ clip, pps, selected, problems, type, media, trackColor, ghost, invalid, whole, dim, top, height, offsetX = 0 }: ClipViewProps) {
   const w = Math.max(3, clip.duration * pps);
   const hue = categoryHue(type?.category ?? 'unknown');
   const mediaId = typeof clip.params.media === 'string' && clip.params.media ? clip.params.media : null;
   const showThumb = !!media && media.version > 0 && (media.kind === 'video' || media.kind === 'image');
-  const sounding = !!media && media.status === 'ready' && media.has_audio && (media.kind === 'audio' || clip.params.sound !== false);
+  // a video's own sound plays only at speed 1 (as the server does it)
+  const sounding = !!media && media.status === 'ready' && media.has_audio
+    && (media.kind === 'audio' || (clip.params.sound !== false && Math.abs(mediaSpeed(clip) - 1) < 1e-3));
   const summary = clipSummary(clip, type, media ? new Map([[media.id, media]]) : new Map());
   const sw = swatch(clip, type, trackColor);
   const narrow = w < 26;
@@ -104,17 +112,19 @@ export const ClipView = memo(function ClipView({ clip, pps, selected, problems, 
     '--hue': hue,
   };
   if (top !== undefined) style.top = top;
-  const cls = ['clip', selected && 'sel', problems?.length && 'bad', ghost && 'ghost', invalid && 'invalid', !type && 'unknown']
+  if (height !== undefined) style.height = height;
+  const cls = ['clip', selected && 'sel', problems?.length && 'bad', ghost && 'ghost', invalid && 'invalid', !type && 'unknown', whole && 'whole', dim && 'dim']
     .filter(Boolean).join(' ');
+  const title = problems?.length ? problems.join('\n') : dim ? 'Muted in this set: any edit plays it again' : undefined;
   return (
-    <div className={cls} data-clip={ghost ? undefined : clip.id} data-type={clip.type} style={style}
-      title={problems?.length ? problems.join('\n') : undefined}>
+    <div className={cls} data-clip={ghost ? undefined : clip.id} data-type={clip.type} data-whole={whole ? '' : undefined} style={style} title={title}>
       {showThumb && <div className="clip-thumb" style={{ backgroundImage: `url(${mediaThumbUrl(media!.id, media!.version)})` }} />}
       {sounding && mediaId && <Waveform mediaId={mediaId} clip={clip} mediaDuration={media!.duration} loop={clip.params.loop === true} />}
       {clip.fade_in > 0 && <div className="clip-fade in" style={{ width: Math.min(w, clip.fade_in * pps) }} />}
       {clip.fade_out > 0 && <div className="clip-fade out" style={{ width: Math.min(w, clip.fade_out * pps) }} />}
       {!narrow && (
         <div className="clip-label">
+          {whole && <span className="clip-whole" title="Whole sign: on all three lights"><i /><i /><i /></span>}
           {sw && <i className="clip-swatch" style={{ background: sw }} />}
           <span className="clip-type">{type?.label ?? clip.type}</span>
           {summary && <span className={`clip-sum ${typeof clip.params.text === 'string' ? 'text' : ''}`}>{summary}</span>}

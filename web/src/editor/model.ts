@@ -2,7 +2,16 @@
 // splitting and the immutable edits of a set. Pure functions, no React (unit-tested).
 //
 // Rules (also described in the editor's help):
-//  * Clips on one track never overlap. A clip that is moved goes to the free
+//  * Clips on one track never overlap, and a whole-sign clip (on a track with
+//    target "all") takes the three lights over: it overlaps no light clip and no
+//    other whole-sign clip. So a light track's lane is occupied by its own clips
+//    plus every whole-sign clip, and the whole-sign lane by every light clip plus
+//    the whole-sign clips; audio tracks only by their own clips. Sets that break
+//    this (older data) still load and play: only what is moved next must fit.
+//  * Whole-sign tracks have no row of their own: their clips are drawn as one
+//    block across the light rows (rowTracks). Light rows stay together above
+//    the audio rows so that block is one rectangle.
+//  * A clip that is moved goes to the free
 //    position nearest to where it is dragged: if the spot under the pointer is
 //    taken, it butts up against the neighbour (or hops past it when the pointer is
 //    nearer the other side). A group moves as one block.
@@ -28,6 +37,8 @@ export function newId(): string {
 export const clipEnd = (c: { start: number; duration: number }) => c.start + c.duration;
 const round = (t: number) => Math.round(t * 10000) / 10000;
 
+export const isLight = (t: Target) => t === 'face0' || t === 'face1' || t === 'face2';
+
 /** Can a clip type with these `targets` ("face" | "all" | "audio") go on a track with this target? */
 export function accepts(targets: readonly string[], trackTarget: Target): boolean {
   if (trackTarget === 'audio') return targets.includes('audio');
@@ -40,9 +51,19 @@ export interface Span {
   end: number;
 }
 
-/** The clips of a track that block placement (all but `exclude`), sorted by start. */
-export function blockers(track: Track, exclude?: ReadonlySet<string>): Span[] {
-  return track.clips
+/**
+ * What a clip on `track` may not overlap (all but `exclude`), sorted by start. The spans of
+ * different tracks may overlap each other; the functions below do not need them merged.
+ */
+export function blockers(set: SetData, track: Track, exclude?: ReadonlySet<string>): Span[] {
+  const lane = (t: Track) => {
+    if (track.target === 'audio' || t.target === 'audio') return t.id === track.id;
+    if (track.target === 'all') return true;
+    return t.id === track.id || t.target === 'all';
+  };
+  return set.tracks
+    .filter(lane)
+    .flatMap((t) => t.clips)
     .filter((c) => !exclude?.has(c.id))
     .map((c) => ({ start: c.start, end: clipEnd(c) }))
     .sort((a, b) => a.start - b.start);
@@ -104,9 +125,9 @@ export function resolveShift(items: MoveItem[], desired: number, forward = false
   return null;
 }
 
-/** Where a new clip of `duration` dropped with its start at `t` goes on a track: see the rules above. */
-export function placeNew(track: Track, t: number, duration: number): { start: number; duration: number } {
-  const spans = blockers(track);
+/** Where a new clip of `duration` dropped with its start at `t` goes on `track`: see the rules above. */
+export function placeNew(set: SetData, track: Track, t: number, duration: number): { start: number; duration: number } {
+  const spans = blockers(set, track);
   const start = Math.max(0, t);
   const gap = gapAt(spans, start);
   if (gap) {
@@ -124,9 +145,9 @@ export function placeNew(track: Track, t: number, duration: number): { start: nu
  * neighbours, at t = 0 and at MIN_DURATION. `minStart` limits a start trim further
  * (a media clip cannot start before the beginning of its file).
  */
-export function trim(track: Track, clip: Clip, edge: 'start' | 'end', to: number, minStart = 0): { start: number; duration: number } {
+export function trim(set: SetData, track: Track, clip: Clip, edge: 'start' | 'end', to: number, minStart = 0): { start: number; duration: number } {
   const end = clipEnd(clip);
-  const spans = blockers(track, new Set([clip.id]));
+  const spans = blockers(set, track, new Set([clip.id]));
   if (edge === 'end') {
     let limit = Infinity;
     for (const s of spans) if (s.start >= clip.start - EPS && s.start < limit) limit = s.start;
@@ -139,13 +160,29 @@ export function trim(track: Track, clip: Clip, edge: 'start' | 'end', to: number
   return { start: round(st), duration: round(end - st) };
 }
 
-/** Applies a trim result: a start trim of a clip with an offset moves its in-point too. */
+/**
+ * How fast a media clip runs through its file: media time = offset + clip time * speed (the video
+ * renderer's `speed`, 0..8, 0 = a still frame; types without it play at 1).
+ */
+export function mediaSpeed(clip: Clip): number {
+  const v = Number(clip.params.speed ?? 1);
+  return Number.isFinite(v) ? Math.min(8, Math.max(0, v)) : 1;
+}
+
+/** The earliest start a start trim may reach: where the clip would begin at the file's first picture. */
+export function trimFloor(clip: Clip): number {
+  const speed = mediaSpeed(clip);
+  const off = Number(clip.params.offset ?? 0) || 0;
+  return speed > 0 ? clip.start - off / speed : 0;
+}
+
+/** Applies a trim result: a start trim of a clip with an offset moves its in-point too (by the media time it covers). */
 export function applyTrim(clip: Clip, start: number, duration: number, withOffset: boolean): Clip {
   if (start === clip.start && duration === clip.duration) return clip;
   const out: Clip = { ...clip, start, duration };
   if (withOffset && start !== clip.start) {
     const off = Number(clip.params.offset ?? 0) || 0;
-    out.params = { ...clip.params, offset: round(Math.max(0, off + (start - clip.start))) };
+    out.params = { ...clip.params, offset: round(Math.max(0, off + (start - clip.start) * mediaSpeed(clip))) };
   }
   out.fade_in = Math.min(out.fade_in, duration);
   out.fade_out = Math.min(out.fade_out, duration);
@@ -163,7 +200,7 @@ export function split(clip: Clip, t: number, withOffset: boolean): [Clip, Clip] 
   b.fade_out = Math.min(b.fade_out, b.duration);
   if (withOffset) {
     const off = Number(clip.params.offset ?? 0) || 0;
-    b.params.offset = round(off + (cut - clip.start));
+    b.params.offset = round(off + (cut - clip.start) * mediaSpeed(clip));
   }
   return [a, b];
 }
@@ -338,23 +375,69 @@ export function splitClips(set: SetData, ids: string[], t: number, offsetTypes: 
 export const TARGET_NAMES: Record<Target, string> = {
   face0: 'Top light', face1: 'Middle light', face2: 'Bottom light', all: 'Whole sign', audio: 'Audio',
 };
+const BASE_NAMES: Record<Target, string> = { face0: 'Top', face1: 'Middle', face2: 'Bottom', all: 'Whole sign', audio: 'Audio' };
 
-export function addTrack(set: SetData, target: Target, index?: number): { set: SetData; id: string } {
+/** How a clip's place is named to the user: its track, or "Whole sign" for the hidden tracks. */
+export const placeName = (track: Track) => (track.target === 'all' ? TARGET_NAMES.all : track.name);
+
+/**
+ * The timeline's rows: every track but the whole-sign ones, the lights first, then audio, each
+ * group in stored order. A stored order that mixes them is shown like this and only rewritten
+ * when the user changes the track order.
+ */
+export function rowTracks(tracks: Track[]): Track[] {
+  const vis = tracks.filter((t) => t.target !== 'all');
+  return [...vis.filter((t) => isLight(t.target)), ...vis.filter((t) => t.target === 'audio')];
+}
+
+/** First and last row a track with this target may be at (lights above audio). */
+export function rowRange(rows: Track[], target: Target): [number, number] {
+  const n = rows.filter((t) => isLight(t.target)).length;
+  return isLight(target) ? [0, n - 1] : [n, rows.length - 1];
+}
+
+/** The set with its rows in this order; whole-sign tracks keep their stored index (their layer). */
+function withRows(set: SetData, rows: Track[]): SetData {
+  const tracks = rows.slice();
+  set.tracks.forEach((t, i) => {
+    if (t.target === 'all') tracks.splice(Math.min(i, tracks.length), 0, t);
+  });
+  return { ...set, tracks };
+}
+
+/** The track new whole-sign clips go on: the first one, or a new one as the top layer. */
+export function wholeTrack(set: SetData): { set: SetData; track: Track } {
+  const found = set.tracks.find((t) => t.target === 'all');
+  if (found) return { set, track: found };
+  const track: Track = { id: newId(), name: BASE_NAMES.all, target: 'all', muted: false, clips: [] };
+  return { set: { ...set, tracks: [track, ...set.tracks] }, track };
+}
+
+/**
+ * Whole-sign tracks have no row and so no mute button: a mute stored on one (older data) would
+ * hide clips for good. The editor drops it with the first edit.
+ */
+export function unmuteHidden(set: SetData): SetData {
+  if (!set.tracks.some((t) => t.target === 'all' && t.muted)) return set;
+  return { ...set, tracks: set.tracks.map((t) => (t.target === 'all' && t.muted ? { ...t, muted: false } : t)) };
+}
+
+/** Adds a light or audio track at row `row` (default: after the last of its target), kept in its group. */
+export function addTrack(set: SetData, target: Exclude<Target, 'all'>, row?: number): { set: SetData; id: string } {
   const id = newId();
   const n = set.tracks.filter((t) => t.target === target).length;
-  const base = { face0: 'Top', face1: 'Middle', face2: 'Bottom', all: 'Whole sign', audio: 'Audio' }[target];
+  const base = BASE_NAMES[target];
   const track: Track = { id, name: n ? `${base} ${n + 1}` : base, target, muted: false, clips: [] };
-  const tracks = set.tracks.slice();
-  // By default a new track goes after the last track of the same target (or at the end).
-  let at = index;
+  const rows = rowTracks(set.tracks);
+  const [lo, hi] = rowRange(rows, target);
+  let at = row;
   if (at === undefined) {
     let last = -1;
-    tracks.forEach((t, i) => t.target === target && (last = i));
-    at = last >= 0 ? last + 1 : target === 'audio' ? tracks.length : tracks.findIndex((t) => t.target === 'audio');
-    if (at < 0) at = tracks.length;
+    rows.forEach((t, i) => t.target === target && (last = i));
+    at = last >= 0 ? last + 1 : hi + 1;
   }
-  tracks.splice(at, 0, track);
-  return { set: { ...set, tracks }, id };
+  rows.splice(Math.max(lo, Math.min(hi + 1, at)), 0, track);
+  return { set: withRows(set, rows), id };
 }
 
 export function updateTrack(set: SetData, id: string, patch: Partial<Pick<Track, 'name' | 'muted'>>): SetData {
@@ -365,31 +448,62 @@ export function removeTrack(set: SetData, id: string): SetData {
   return { ...set, tracks: set.tracks.filter((t) => t.id !== id) };
 }
 
+/** Moves a row to row `to`, kept within its group (lights or audio). */
 export function moveTrack(set: SetData, id: string, to: number): SetData {
-  const from = set.tracks.findIndex((t) => t.id === id);
+  const rows = rowTracks(set.tracks);
+  const from = rows.findIndex((t) => t.id === id);
   if (from < 0) return set;
-  const dest = Math.max(0, Math.min(set.tracks.length - 1, to));
+  const [lo, hi] = rowRange(rows, rows[from].target);
+  const dest = Math.max(lo, Math.min(hi, to));
   if (dest === from) return set;
-  const tracks = set.tracks.slice();
-  const [t] = tracks.splice(from, 1);
-  tracks.splice(dest, 0, t);
-  return { ...set, tracks };
+  const [t] = rows.splice(from, 1);
+  rows.splice(dest, 0, t);
+  return withRows(set, rows);
+}
+
+// ---------------------------------------------------------------- whole sign <-> one light
+export type Converted = { set: SetData } | { error: string };
+
+/** Puts a light clip on the whole sign at the same time, if no light clip is in the way. */
+export function toWhole(set: SetData, id: string): Converted {
+  const loc = findClip(set, id);
+  if (!loc || loc.track.target === 'all') return { set };
+  const w = wholeTrack(set);
+  if (collides(blockers(w.set, w.track, new Set([id])), loc.clip.start, clipEnd(loc.clip))) {
+    return { error: 'Other clips play on the lights during this one: move them away first' };
+  }
+  return { set: applyMoves(w.set, [{ id, toTrack: w.track.id, start: loc.clip.start }]) };
+}
+
+/** Puts a whole-sign clip on one light at the same time: `prefer` if it has room, else the first that has. */
+export function toLight(set: SetData, id: string, prefer?: string): Converted {
+  const loc = findClip(set, id);
+  if (!loc || loc.track.target !== 'all') return { set };
+  const lights = rowTracks(set.tracks).filter((t) => isLight(t.target));
+  const order = [...lights.filter((t) => t.id === prefer), ...lights.filter((t) => t.id !== prefer)];
+  const free = order.find((t) => !collides(blockers(set, t, new Set([id])), loc.clip.start, clipEnd(loc.clip)));
+  if (!free) return { error: lights.length ? 'No light is free for the whole length of this clip' : 'There is no light track to put it on' };
+  return { set: applyMoves(set, [{ id, toTrack: free.id, start: loc.clip.start }]) };
 }
 
 // ---------------------------------------------------------------- groups: move, nudge, paste, duplicate
 /**
- * Plans moving the clips `ids` by `dt` seconds and `rows` tracks. A row shift that would put
- * a clip on a missing or incompatible track is reduced toward 0 until it fits; the time shift
- * is resolved with resolveShift. Returns null when there is no free position at all.
+ * Plans moving the clips `ids` by `dt` seconds and `rows` rows (see rowTracks). A row shift that
+ * would put a clip on a missing or incompatible track is reduced toward 0 until it fits; whole-sign
+ * clips are on every light already and keep their track. The time shift is resolved with
+ * resolveShift. Returns null when there is no free position at all.
  */
 export function planMove(
   set: SetData, ids: string[], dt: number, rows: number, acceptsType: (type: string, target: Target) => boolean, forward = false,
 ): Move[] | null {
   const locs = ids.map((id) => findClip(set, id)).filter((l): l is Located => !!l);
   if (!locs.length) return [];
+  const order = rowTracks(set.tracks);
+  const rowOf = new Map(order.map((t, i) => [t.id, i]));
+  const dest = (l: Located, r: number): Track | undefined => (l.track.target === 'all' ? l.track : order[rowOf.get(l.track.id)! + r]);
   const rowOk = (r: number) => locs.every((l) => {
-    const t = set.tracks[l.trackIndex + r];
-    return !!t && acceptsType(l.clip.type, t.target);
+    const t = dest(l, r);
+    return !!t && (t === l.track || acceptsType(l.clip.type, t.target));
   });
   let r = rows;
   while (r !== 0 && !rowOk(r)) r += r > 0 ? -1 : 1;
@@ -397,13 +511,13 @@ export function planMove(
   const spanCache = new Map<string, Span[]>();
   const spansOf = (t: Track) => {
     let s = spanCache.get(t.id);
-    if (!s) spanCache.set(t.id, (s = blockers(t, moving)));
+    if (!s) spanCache.set(t.id, (s = blockers(set, t, moving)));
     return s;
   };
-  const items = locs.map((l) => ({ spans: spansOf(set.tracks[l.trackIndex + r]), start: l.clip.start, end: clipEnd(l.clip) }));
+  const items = locs.map((l) => ({ spans: spansOf(dest(l, r)!), start: l.clip.start, end: clipEnd(l.clip) }));
   const shift = resolveShift(items, dt, forward);
   if (shift === null) return null;
-  return locs.map((l) => ({ id: l.clip.id, toTrack: set.tracks[l.trackIndex + r].id, start: Math.max(0, l.clip.start + shift) }));
+  return locs.map((l) => ({ id: l.clip.id, toTrack: dest(l, r)!.id, start: Math.max(0, l.clip.start + shift) }));
 }
 
 export interface ClipboardItem {
@@ -421,21 +535,24 @@ export function copyClips(set: SetData, ids: string[]): ClipboardItem[] {
 
 /**
  * Inserts copies of `items` with their earliest start at `at` (or later if that is taken), each on
- * its original track if it still exists, else on the first track with the same target.
+ * its original track if it still exists, else on the first track with the same target (whole-sign
+ * clips: the whole-sign track, made if needed).
  */
 export function pasteClips(set: SetData, items: ClipboardItem[], at: number): { set: SetData; ids: string[] } {
   if (!items.length) return { set, ids: [] };
   const first = Math.min(...items.map((i) => i.clip.start));
   const placed: { trackId: string; clip: Clip }[] = [];
+  let base = set;
   for (const it of items) {
-    const track = set.tracks.find((t) => t.id === it.trackId) ?? set.tracks.find((t) => t.target === it.target);
+    let track = base.tracks.find((t) => t.id === it.trackId) ?? base.tracks.find((t) => t.target === it.target);
+    if (!track && it.target === 'all') ({ set: base, track } = wholeTrack(base));
     if (!track) continue;
     placed.push({ trackId: track.id, clip: { ...it.clip, id: newId(), params: { ...it.clip.params }, start: it.clip.start - first + at } });
   }
   if (!placed.length) return { set, ids: [] };
-  const items2 = placed.map((p) => ({ spans: blockers(set.tracks.find((t) => t.id === p.trackId)!), start: p.clip.start, end: clipEnd(p.clip) }));
+  const items2 = placed.map((p) => ({ spans: blockers(base, base.tracks.find((t) => t.id === p.trackId)!), start: p.clip.start, end: clipEnd(p.clip) }));
   const shift = resolveShift(items2, 0, true) ?? 0;
-  let out = set;
+  let out = base;
   for (const p of placed) out = addClips(out, p.trackId, [{ ...p.clip, start: round(Math.max(0, p.clip.start + shift)) }]);
   return { set: out, ids: placed.map((p) => p.clip.id) };
 }

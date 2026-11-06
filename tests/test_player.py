@@ -51,13 +51,14 @@ def test_face_clip_masked_and_placed():
     assert tuple(f[F, 0]) == (0, 255, 0) and tuple(f[F - 1, 0]) == (0, 0, 0)
 
 
-def test_all_track_default_unmasked_and_mask_three_discs():
-    s = make_set(("all", [solid("#0000ff")]))
+def test_all_track_default_three_discs_and_unmasked_on_request():
+    s = make_set(("all", [solid("#0000ff", mask=False)]))
     f, _ = Player(env(off_style="dark"), s, background_init=False).render(0.5)
     assert (f == (0, 0, 255)).all()
-    s = make_set(("all", [solid("#0000ff", mask=True)]))
-    f, _ = Player(env(off_style="dark"), s, background_init=False).render(0.5)
-    assert px(f, 0) == px(f, 2) == (0, 0, 255) and tuple(f[0, 0]) == (0, 0, 0)
+    for mask in (None, True):
+        s = make_set(("all", [solid("#0000ff", mask=mask)]))
+        f, _ = Player(env(off_style="dark"), s, background_init=False).render(0.5)
+        assert px(f, 0) == px(f, 2) == (0, 0, 255) and tuple(f[0, 0]) == (0, 0, 0)
     assert sign_mask().shape == (config.H, config.W)
     assert face_mask()[C, C] == 1.0 and face_mask()[0, 0] == 0.0
     # anti-aliased edge: some partial values

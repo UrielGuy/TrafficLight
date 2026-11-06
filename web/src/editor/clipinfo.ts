@@ -62,6 +62,49 @@ export function clipSummary(clip: Clip, type: ClipType | undefined, media: Map<s
 /** What can be dragged from the palette. */
 export type PaletteItem = { kind: 'type'; type: ClipType } | { kind: 'media'; media: MediaItem; type: ClipType };
 
+/** Where a picture goes in a box, as the server's media clips place it (render/media/common.py geometry). */
+export interface Placement {
+  /** Part of the picture used. */
+  sx: number; sy: number; sw: number; sh: number;
+  /** Where it goes in the box. */
+  dx: number; dy: number; dw: number; dh: number;
+}
+export function fitPicture(srcW: number, srcH: number, boxW: number, boxH: number, fit: string): Placement {
+  const all = { sx: 0, sy: 0, sw: srcW, sh: srcH };
+  if (fit === 'stretch' || srcW <= 0 || srcH <= 0) return { ...all, dx: 0, dy: 0, dw: boxW, dh: boxH };
+  if (fit === 'contain') {
+    const s = Math.min(boxW / srcW, boxH / srcH);
+    const w = Math.min(boxW, Math.max(1, Math.round(srcW * s)));
+    const h = Math.min(boxH, Math.max(1, Math.round(srcH * s)));
+    return { ...all, dx: Math.floor((boxW - w) / 2), dy: Math.floor((boxH - h) / 2), dw: w, dh: h };
+  }
+  // cover: scaled to at least the box, the middle cut out
+  const s = Math.max(boxW / srcW, boxH / srcH);
+  const w = Math.max(boxW, Math.round(srcW * s));
+  const h = Math.max(boxH, Math.round(srcH * s));
+  const x = Math.floor((w - boxW) / 2);
+  const y = Math.floor((h - boxH) / 2);
+  return { sx: (x * srcW) / w, sy: (y * srcH) / h, sw: (boxW * srcW) / w, sh: (boxH * srcH) / h, dx: 0, dy: 0, dw: boxW, dh: boxH };
+}
+
+/** Height / width above which a free crop counts as made for the whole sign: nearer 1:3 than 1:1. */
+const SIGN_RATIO = Math.sqrt(3);
+
+/**
+ * Does a palette item become a whole-sign clip (one block over the three lights) rather than a
+ * clip on one light? Types made only for the whole sign always do; a video or picture does when
+ * its crop was drawn for the whole sign, or (free crop) when it is tall.
+ */
+export function itemWhole(item: PaletteItem): boolean {
+  const tg = item.type.targets;
+  if (!tg.includes('all')) return false;
+  if (!tg.includes('face')) return true;
+  if (item.kind !== 'media') return false;
+  const shape = item.media.edit.shape;
+  if (shape !== 'free') return shape === 'sign';
+  return item.media.width > 0 && item.media.height / item.media.width > SIGN_RATIO;
+}
+
 export function itemDuration(item: PaletteItem): number {
   if (item.kind === 'media' && item.media.duration > 0 && item.media.kind !== 'image') return Math.round(item.media.duration * 1000) / 1000;
   return item.type.default_duration;

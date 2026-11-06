@@ -1,14 +1,14 @@
 // Editor commands used by the keyboard, the toolbar, the inspector and the palette.
 import { api } from '../api/client';
-import type { SetData, Target } from '../api/types';
+import type { SetData, Target, Track } from '../api/types';
 import { catalogRes, setsRes } from '../state/app';
 import { toast } from '../state/toast';
-import { acceptsType, itemDuration, makeClip, offsetTypes, typeMap, type PaletteItem } from './clipinfo';
+import { acceptsType, itemDuration, itemWhole, makeClip, offsetTypes, typeMap, type PaletteItem } from './clipinfo';
 import { clearBackup, docStore, draft, edit, getClipboard, isDirty, markSaved, select, setClipboard, setInsert } from './doc';
 import { clock } from './session';
 import {
-  addClips, allClipIds, clipEnd, copyClips, duplicateClips, findClip, pasteClips, placeNew, planMove, applyMoves,
-  removeClips, splitClips,
+  addClips, allClipIds, clipEnd, copyClips, duplicateClips, findClip, isLight, pasteClips, placeNew, planMove, applyMoves,
+  removeClips, rowTracks, splitClips, toLight, toWhole, wholeTrack,
 } from './model';
 
 let typesCache: { src: unknown; map: ReturnType<typeof typeMap> } | null = null;
@@ -20,24 +20,37 @@ export const types = () => {
 export const accepts = (type: string, target: Target) => acceptsType(types(), type, target);
 const selection = () => docStore.get()?.selection ?? [];
 
+/** Can `item` be dropped on this row? A whole-sign item goes on any light row (it covers them all). */
+export function rowTakes(item: PaletteItem, row: Track): boolean {
+  if (itemWhole(item)) return isLight(row.target);
+  return row.target !== 'all' && accepts(item.type.type, row.target);
+}
+
 /**
- * Adds a palette item without dragging: on the track of the insertion point if it can take the
- * item (else the first track that can), at the insertion point or the playhead. The insertion
- * point then moves to the new clip's end, so repeated clicks lay clips out one after another.
+ * The light row a whole-sign clip came from (dropped on, or turned from a light clip), so turning
+ * it back puts it there. Only a preference: forgotten on reload.
+ */
+const homeRow = new Map<string, string>();
+
+/**
+ * Adds a palette item without dragging: on the row of the insertion point if it can take the
+ * item (else the selected clip's row, else the first row that can), at the insertion point or the
+ * playhead. The insertion point then moves to the new clip's end, so repeated clicks lay clips
+ * out one after another.
  */
 export function addItem(item: PaletteItem): boolean {
   const s = draft();
   const ins = docStore.get()?.insert ?? null;
-  const ok = (target: Target) => accepts(item.type.type, target);
-  let track = ins ? s.tracks.find((t) => t.id === ins.trackId && ok(t.target)) : undefined;
+  const ok = (t: Track) => rowTakes(item, t);
+  let track = ins ? s.tracks.find((t) => t.id === ins.trackId && ok(t)) : undefined;
   const sel = selection()[0];
   if (!track && sel) {
     const loc = findClip(s, sel);
-    if (loc && ok(loc.track.target)) track = loc.track;
+    if (loc && ok(loc.track)) track = loc.track;
   }
-  track ??= s.tracks.find((t) => ok(t.target));
+  track ??= rowTracks(s.tracks).find(ok);
   if (!track) {
-    toast.info(`No track can take ${item.type.label.toLowerCase()} clips: add one first`);
+    toast.info(itemWhole(item) ? 'Add a light track first' : `No track can take ${item.type.label.toLowerCase()} clips: add one first`);
     return false;
   }
   const at = ins && ins.trackId === track.id ? ins.t : clock.now();
@@ -45,16 +58,35 @@ export function addItem(item: PaletteItem): boolean {
   return true;
 }
 
-/** Puts a new clip for `item` on a track with its start near `t` (see placeNew). Returns its id. */
+/**
+ * Puts a new clip for `item` near `t` (see placeNew) for a drop on the row `trackId`: on that track,
+ * or for a whole-sign item on the whole-sign track (made if needed). Returns its id.
+ */
 export function dropItem(item: PaletteItem, trackId: string, t: number): string | null {
   const s = draft();
-  const track = s.tracks.find((x) => x.id === trackId);
-  if (!track || !accepts(item.type.type, track.target)) return null;
-  const p = placeNew(track, t, itemDuration(item));
+  const row = s.tracks.find((x) => x.id === trackId);
+  if (!row || !rowTakes(item, row)) return null;
+  const whole = itemWhole(item);
+  const dest = whole ? wholeTrack(s) : { set: s, track: row };
+  const p = placeNew(dest.set, dest.track, t, itemDuration(item));
   const clip = makeClip(item, p.start, p.duration);
-  edit((x) => addClips(x, trackId, [clip]), { select: [clip.id] });
+  edit(() => addClips(dest.set, dest.track.id, [clip]), { select: [clip.id] });
+  if (whole) homeRow.set(clip.id, trackId);
   setInsert({ trackId, t: clipEnd(clip) });
   return clip.id;
+}
+
+/** Turns a clip into a whole-sign clip or back into a light clip, same start and length; says why not. */
+export function setWhole(id: string, whole: boolean) {
+  const s = draft();
+  const from = findClip(s, id)?.track.id;
+  const r = whole ? toWhole(s, id) : toLight(s, id, homeRow.get(id));
+  if ('error' in r) {
+    toast.info(r.error);
+    return;
+  }
+  if (whole && from) homeRow.set(id, from);
+  edit(() => r.set);
 }
 
 export function deleteSelection() {

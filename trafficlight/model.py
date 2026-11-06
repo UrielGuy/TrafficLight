@@ -27,7 +27,7 @@ class Clip(BaseModel):
     duration: float = 4.0              # seconds, > 0
     params: dict[str, Any] = Field(default_factory=dict)   # renderer-specific, see /api/catalog
     # Common properties, applied by the player to every visual clip:
-    mask: Optional[bool] = None        # clip to the light's circle. None = default (faces: True, all: False).
+    mask: Optional[bool] = None        # clip to the round lights (one disc, three on the whole sign). None = default: True.
                                        # On an "all" track True clips to the three circles.
     opacity: float = 1.0               # 0..1
     fade_in: float = 0.0               # seconds; for audio clips these fade the volume

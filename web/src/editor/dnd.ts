@@ -18,10 +18,12 @@ export interface DropTarget {
 }
 export const dropTarget: { current: DropTarget | null } = { current: null };
 
-/** A clip drawn where it would land. */
+/** A clip drawn where it would land: from row `row`, `span` rows tall (a whole-sign clip covers the lights). */
 export interface Ghost {
   clip: Clip;
   row: number;
+  span: number;
+  whole: boolean;
 }
 
 export interface DragView {
