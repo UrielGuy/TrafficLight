@@ -279,6 +279,28 @@ def test_test_patterns(tmp_path):
         assert make_pattern(name).shape == (config.H, config.W, 3)
 
 
+def test_wiring_pattern_goes_to_the_card_unmapped(tmp_path):
+    from trafficlight.output import patterns
+    r = Rig(tmp_path, output={"panel_order": [7, 2, 0, 5, 1, 4], "panel_flip": [False, True] * 3})
+    r.step()
+    d = r.drivers[-1]
+    r.engine.test_pattern("wiring")
+    r.step()
+    r.step()
+    assert r.now_state["source"] == "test" and r.now_state["set_name"] == "wiring"
+    assert d.cards == 2 and np.array_equal(d.last_card, patterns.make_card("wiring"))
+    # the preview: the sign as currently mapped, each panel with its connector number and arrow
+    assert np.array_equal(r.frame, patterns.wiring_preview((7, 2, 0, 5, 1, 4), (False, True) * 3, False))
+    r.store.update_settings({"output": {"panel_order": [0, 1, 2, 3, 4, 5], "panel_flip": [False] * 6}})
+    r.step()
+    assert np.array_equal(r.frame, patterns.make_card("wiring")[:config.H])
+    d = r.drivers[-1]                     # the new mapping opened a new driver; the card still goes out
+    assert d.cards == 1 and d.frames == 0
+    r.engine.test_pattern("off")
+    r.step()
+    assert r.now_state["source"] == "idle" and d.frames == 1 and d.cards == 1
+
+
 def test_settings_applied_live(tmp_path):
     r = Rig(tmp_path)
     r.step()

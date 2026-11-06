@@ -21,7 +21,7 @@ scripts\run.bat        REM start the server; arguments are passed on
 Then open <http://localhost:8080>. `run.bat --port 8090 --data D:\tl-data` changes port and data
 directory. To drive the sign you also need Npcap installed with "Restrict Npcap driver's access to
 Administrators only" unticked (`docs/HARDWARE.md`, section 5). Without it the server runs and the UI
-reports the output as unavailable.
+says what is missing.
 
 ## Raspberry Pi
 
@@ -74,6 +74,12 @@ a separate writable partition; that is not set up here.
 Open `http://localhost:8080` (Windows) or `http://<pi-address>:8080`. From any other machine the
 server must be reachable on port 8080 (the default `--host 0.0.0.0` listens on all interfaces; allow
 it in the Windows firewall prompt if you want to use a phone against the PC).
+
+**Settings → Setup** lists everything the sign still needs (Npcap or the Linux capability, the
+network interface, the link, the receiver card's LEDVision setup, the sound output), each with what
+to do; the Dashboard shows the ones that need attention. **Settings → Panel wiring** works out which
+card port each panel is on and which panels hang upside down: plug them in anywhere, press "Show
+connector numbers", enter what each panel shows (`docs/HARDWARE.md`, section 6).
 
 ## Data
 

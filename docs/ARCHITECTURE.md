@@ -10,6 +10,12 @@ Six 128×64 HUB75 panels stacked vertically = a 128×384 canvas = three 128×128
 own port of a Colorlight 5A-75B receiver card running the **stock firmware**;
 the PC or Raspberry Pi sends it raw Ethernet frames. Full 24-bit colour.
 
+The card has eight ports (J1..J8) and is configured for a 128×512 image
+(`config.PORTS` bands of 64 rows, `config.CARD_H`): band *b* feeds J*b+1*.
+Only the output driver sees that image; `Settings.output.panel_order` says
+which band each panel of the sign is on, the two bands without a panel are
+sent black.
+
 A frame everywhere in the code is a `numpy.ndarray`, `uint8`, shape
 `(384, 128, 3)`, RGB, row 0 = top of the sign as the audience sees it.
 
@@ -43,7 +49,8 @@ web UI (React)  --REST + WebSocket-->  server (FastAPI)
 | `trafficlight/media/ingest.py` | Original -> prepared files (PyAV, Pillow): rotate, crop, trim, proxy, sound, thumbnail. |
 | `trafficlight/media/download.py` | Fetching a link with yt-dlp (as a library) and merging picture and sound with PyAV. |
 | `trafficlight/audio/` | `AudioEngine` contract (`base.py`) and the sounddevice mixer (`engine.py`). |
-| `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver, panel mapping. |
+| `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver, panel mapping (`mapping.py`), test patterns, the wiring rule (`wiring.py`: what the panels show → `panel_order` / `panel_flip`). |
+| `trafficlight/checks.py` | The setup checks (`State.checks`), built from the output and audio statuses. |
 | `trafficlight/store.py` | Sets and settings on disk. |
 | `trafficlight/schedule.py` | Which set plays next (default set + random set). |
 | `trafficlight/player.py` | Timeline evaluation and compositing for one set. |
@@ -247,10 +254,10 @@ JSON everywhere. Errors: HTTP 4xx with `{"detail": "message"}`.
 | `POST /api/validate` | `Set` → `{"problems": [{"clip_id", "track_id", "message"}]}` |
 | `POST /api/transport/pause`, `/play`, `/next` | → `{"ok": true}` — the sign's own playback |
 | `GET /api/settings` | → `Settings` |
-| `PATCH /api/settings` | partial `Settings` (deep-merged) → `Settings`; takes effect at once |
+| `PATCH /api/settings` | partial `Settings` (deep-merged) → `Settings`; takes effect at once. 422 with a readable `detail` for an impossible wiring: `output.panel_order` must be 6 different bands 0..7 (connector − 1), `output.panel_flip` 6 entries |
 | `GET /api/audio/devices` | → `[{"id","name","default","channels"}]` |
 | `GET /api/output/interfaces` | → `[{"id","name","description","mac","up"}]` |
-| `POST /api/output/test` | `{"pattern": "off" \| "panels" \| "white" \| "red" \| "green" \| "blue" \| "gradient"}` → `{"ok": true}`; a test picture replaces the show until `"off"` (panels = each panel in its own colour with its number, to check the mapping) |
+| `POST /api/output/test` | `{"pattern": "off" \| "panels" \| "white" \| "red" \| "green" \| "blue" \| "gradient" \| "wiring"}` → `{"ok": true}`; a test picture replaces the show until `"off"` (panels = each panel in its own colour with its number, to check the mapping; wiring = drawn in the card's image and sent past the mapping: each port's band shows its connector number 1..8, underlined, and an arrow to the top of the band, so each panel shows where it is plugged in and which way up it hangs. The preview meanwhile shows the sign as the current mapping would show that picture) |
 | `GET /api/media` | → `[MediaItem]` |
 | `POST /api/media` | multipart `file` (+ optional `name`) → `MediaItem` with `status: "processing"`; poll `GET /api/media/{id}` until `ready` or `error` |
 | `POST /api/media/import` | `{"url": "https://…", "max_height": 1080, "start": 0, "duration": null, "name": null}` (all but `url` optional) → `MediaItem` with `status: "processing"`, `stage: "downloading"` — fetch a video from a link (YouTube and whatever else yt-dlp handles, or a direct file URL) into the library, picture and sound. `max_height` is the "1080" of 1080p (the shorter side; 144..4320); `start` / `duration` (seconds) fetch only that part and set the item's trim; `name` defaults to the video's title. Failures (offline, unsupported site, removed video) end as `status: "error"` with a readable `error`; a `PATCH` with an `edit` (even the same one) tries the download again with the same settings. 422 for anything but an http(s) link |
@@ -275,10 +282,26 @@ State = {
                "random_in": 123.0 | null},          // seconds until a random set is due; null = n/a
   "output": {"driver": "colorlight", "ok": true, "error": null, "interface": "…", "fps": 59.9, "render_ms": 1.2},
   "audio": {"ok": true, "error": null, "device": "…", "device_name": "…", "volume": 0.8, "voices": 1},
+  "checks": [{"id": "output.link", "level": "error" | "warning" | "info" | "ok",
+              "title": "The link is not gigabit", "detail": "…", "fix": "…" | null}, …],
   "sets_rev": 12, "media_rev": 3,                  // bump when sets / media change: refetch
   "version": "0.1.0"
 }
 ```
+
+`output` and `audio` also carry `problems`: the failures in the same shape
+as a check, from the code that detects them. **`checks`** (built in
+`trafficlight/checks.py`) is the setup list for the UI, most basic first,
+leaving out what cannot be known yet (no link: nothing about the card).
+Levels: `error` = the sign or the sound cannot work, `warning` = works but
+something is off, `info` = a neutral note or hint (driver set to none,
+panel wiring still the default), `ok`. Ids: `output.driver` (off / on /
+cannot start), `output.interface` (none chosen, not found), `output.access`
+(Npcap missing, Npcap admin-only, no CAP_NET_RAW, cannot open),
+`output.settings`, `output.link` (down, not gigabit), `output.send`,
+`output.receiver` (not answering), `output.card_size` (not 128×512),
+`output.wiring`, `audio.backend` (PortAudio missing), `audio.device`
+(missing, none, cannot open, stopped), `server.web_ui` (not built).
 
 ## WebSockets
 
@@ -359,9 +382,27 @@ class MediaLibrary:
     def wait_ready(self, media_id, timeout: float = 30) -> MediaItem: ...   # blocks until not "processing"
     def close(self) -> None: ...
 
+# trafficlight/output/base.py
+class OutputDriver:
+    def send(self, frame): ...          # (384,128,3) RGB, mapped by the driver (order, flips, rotation, colours)
+    def send_card(self, image): ...     # (CARD_H,128,3) RGB already in the card's layout: colour order, gamma,
+                                        # brightness only (the wiring picture); NullDriver ignores it
+    def status(self) -> dict: ...       # {"driver", "ok", "error", "interface", ..., "problems": [check-shaped dicts]}
+class OutputError(RuntimeError):        # OutputError(detail, fix, check="output.access", title=...): str() is the
+                                        # whole message; as_problem() the check entry
+
 # trafficlight/output/patterns.py
 def make(name: str) -> np.ndarray | None: ...
     # a (384,128,3) test frame for "panels" | "white" | "red" | "green" | "blue" | "gradient"; None for unknown
+def make_card(name: str) -> np.ndarray | None: ...      # (CARD_H,128,3) for "wiring"
+def wiring_preview(order, flip, rotate180) -> np.ndarray: ...   # what the sign shows of it under that mapping
+
+# trafficlight/output/wiring.py (same rule in web/src/pages/wiring.ts)
+def from_seen(seen) -> tuple[list[int], list[bool]]: ...
+    # seen[i] = (connector 1..8, arrow points down) or None (dark) for the panel at position i (0 = top)
+    # -> panel_order[i] = connector - 1, panel_flip[i] = arrow down, for rotate180 off. A dark panel gets the
+    # lowest unused band. ValueError for duplicates / out of range.
+def to_seen(order, flip, rotate180=False) -> list[tuple[int, bool]]: ...   # the inverse (pre-fills the wizard)
 ```
 
 The server owns every HTTP route, including `/api/media*` (it calls

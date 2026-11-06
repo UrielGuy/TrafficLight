@@ -24,7 +24,7 @@ from typing import Sequence
 import numpy as np
 
 from .base import NetInterface, OutputError
-from .rawsock_base import RawSocket
+from .rawsock_base import RawSocket, missing_interface_error, no_interface_error, open_failed_error
 
 NPF_PREFIX = "\\Device\\NPF_"
 PCAP_HDR = 16
@@ -169,8 +169,9 @@ def load_wpcap():
             lib = ctypes.CDLL("wpcap.dll")
     except OSError as e:
         raise OutputError(
-            f"Npcap is not installed (wpcap.dll not found). Install it from {NPCAP_URL}; "
-            "leave 'Restrict Npcap driver's access to Administrators only' unticked.") from e
+            "Npcap is not installed (wpcap.dll not found): Windows needs it to send raw Ethernet frames.",
+            f"Install it from {NPCAP_URL}, leave 'Restrict Npcap driver's access to Administrators only' "
+            "unticked, then restart the server.", check="output.access", title="Npcap is not installed") from e
     vp, cp, i = ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int
     sig = {
         "pcap_lib_version": ([], cp),
@@ -223,26 +224,28 @@ class NpcapRawSocket(RawSocket):
 
     def __init__(self, interface: str):
         if not interface:
-            raise OutputError("No network interface chosen for the Colorlight card")
+            raise no_interface_error()
         lib = load_wpcap()
         adapter = find_adapter(interface)
         if adapter is None:
-            raise OutputError(f"Network adapter {interface!r} not found")
+            raise missing_interface_error(interface)
         self.adapter = adapter
         self.name = adapter.device
+        self.label = adapter.friendly or adapter.device
         if npcap_admin_only() and not is_elevated():
             # Opening would make Npcap ask for elevation with a UAC prompt (and block until
             # someone answers it); say what to do instead.
             raise OutputError(
-                "Npcap is installed in 'Administrators only' mode: run the server as administrator, "
-                f"or reinstall Npcap ({NPCAP_URL}) with 'Restrict Npcap driver's access to "
-                "Administrators only' unticked.")
+                "Npcap is installed in 'Administrators only' mode, and the server is not running as administrator.",
+                f"Reinstall Npcap ({NPCAP_URL}) with 'Restrict Npcap driver's access to Administrators only' "
+                "unticked, then restart the server. Or run the server as administrator.",
+                check="output.access", title="Npcap is restricted to administrators")
         self.lib = lib
         err = ctypes.create_string_buffer(512)
         self.p = lib.pcap_open_live(adapter.device.encode(), 2048, 0, 1, err)
         if not self.p:
             msg = err.value.decode(errors="replace").strip()
-            raise OutputError(f"Npcap cannot open {adapter.friendly or adapter.device}: {msg}")
+            raise open_failed_error(adapter.friendly or adapter.device, f"Npcap says {msg!r}")
         if lib.pcap_setnonblock(self.p, 1, err) != 0:
             pass                         # replies are then read with the 1 ms timeout instead
         prog = _bpf_program()

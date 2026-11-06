@@ -7,7 +7,9 @@ the missed frames are dropped, not rushed):
 * the sign player plays what the schedule says -> output driver + audio engine;
 * an editor session (at most one) plays a draft set; when live it replaces the
   sign player on the LEDs and speakers and the schedule is suspended;
-* a test pattern, while one is set, replaces everything on the LEDs;
+* a test pattern, while one is set, replaces everything on the LEDs (the
+  "wiring" one goes to the driver as a ready card image, past the panel
+  mapping; the preview shows it as the mapped sign would);
 * the newest sign frame and editor frame are kept in FrameSlots for the
   preview sockets, which encode them only when they want one.
 
@@ -27,9 +29,10 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from . import __version__, config
-from .audio.base import AudioEngine, NullAudio
+from .audio.base import AudioEngine, NullAudio, backend_problem
+from .checks import setup_checks
 from .model import Set, Settings
-from .output.base import OutputDriver, create_driver
+from .output.base import OutputDriver, OutputError, create_driver, problem
 from .player import PRE_ROLL, Player, idle_frame, log_once
 from .render.base import AudioCue, RenderEnv
 from .schedule import Pick, Schedule
@@ -42,7 +45,8 @@ DRIVER_RETRY = 3.0         # seconds between attempts to (re)open a failed outpu
 PNG_LIMIT = 32 * 1024      # a PNG bigger than this (video, noise) is sent as JPEG instead
 JPEG_QUALITY = 88
 JPEG_STICKY = 1.0          # after a frame went JPEG, re-try PNG this often (s)
-TEST_PATTERNS = ("off", "panels", "white", "red", "green", "blue", "gradient")
+TEST_PATTERNS = ("off", "panels", "white", "red", "green", "blue", "gradient", "wiring")
+CARD_PATTERNS = ("wiring",)    # drawn in the receiver card's image (output/patterns.make_card)
 
 
 # ---------------------------------------------------------------- preview frames
@@ -142,6 +146,32 @@ def make_pattern(name: str) -> Optional[np.ndarray]:
     return None if f is None else np.array(f, dtype=np.uint8, copy=True)
 
 
+def make_card_pattern(name: str) -> Optional[np.ndarray]:
+    try:
+        from .output import patterns
+        return patterns.make_card(name)
+    except Exception:
+        log_once(("card-pattern", name), "patterns.make_card(%r) failed", name, exc=True)
+        return None
+
+
+def card_preview(settings: Settings) -> np.ndarray:
+    """The wiring picture as the sign shows it under the current mapping (what the web preview gets)."""
+    o = settings.output
+    try:
+        from .output import patterns
+        return patterns.wiring_preview(tuple(o.panel_order), tuple(o.panel_flip), o.rotate180)
+    except Exception:
+        log_once("wiring-preview", "wiring preview failed; showing black", exc=True)
+        return np.zeros((config.H, config.W, 3), np.uint8)
+
+
+def _failure(e: Exception, msg: str) -> dict[str, Any]:
+    if isinstance(e, OutputError):
+        return e.as_problem()
+    return problem("output.driver", "The LED output cannot start", msg)
+
+
 # ---------------------------------------------------------------- editor session
 class EditorSession:
     """State of one editor socket. Methods are called from the server's threads; the
@@ -239,6 +269,7 @@ class Engine:
         self._req_show: Optional[tuple[Pick, Set, bool]] = None
         self._req_next = False
         self._test: Optional[np.ndarray] = None
+        self._test_card: Optional[np.ndarray] = None   # with a card pattern: what the driver gets
         self._test_name: Optional[str] = None
         self._editor: Optional[EditorSession] = None
 
@@ -249,6 +280,7 @@ class Engine:
         self._ed_rev = -1
         self._driver: Optional[OutputDriver] = None
         self._driver_error: Optional[str] = None
+        self._driver_problem: Optional[dict[str, Any]] = None   # the same failure, for the setup checks
         self._driver_retry_at = 0.0
         self._settings_rev = -1
         self._sets_rev = store.rev
@@ -341,8 +373,15 @@ class Engine:
 
     def test_pattern(self, name: str) -> None:
         """ValueError for an unknown pattern; "off" ends the test picture."""
+        card = None
         if name == "off":
             frame = None
+        elif name in CARD_PATTERNS:
+            card = make_card_pattern(name)
+            if card is None or card.shape != (config.CARD_H, config.W, 3):
+                raise ValueError(f"Test pattern {name!r} is not available")
+            card.flags.writeable = False
+            frame = card_preview(self.env.settings)
         else:
             frame = make_pattern(name) if name in TEST_PATTERNS else None
             if frame is None or frame.shape != (config.H, config.W, 3):
@@ -350,6 +389,7 @@ class Engine:
             frame.flags.writeable = False
         with self._lock:
             self._test = frame
+            self._test_card = card
             self._test_name = None if frame is None else name
 
     def open_editor(self, live: bool = True) -> EditorSession:
@@ -394,12 +434,14 @@ class Engine:
                        "t": self._t, "duration": max(MIN_SET_SECONDS, self._set.duration), "paused": self._paused}
             random_in = self.schedule.random_in(rotation, settings.schedule)
         sch = settings.schedule
+        output, audio = self._output_status(settings), self._audio_status(settings)
         return {
             "now": now,
             "schedule": {"default_set": sch.default_set, "random_minutes": sch.random_minutes,
                          "random_enabled": sch.random_enabled, "random_in": random_in},
-            "output": self._output_status(settings),
-            "audio": self._audio_status(settings),
+            "output": output,
+            "audio": audio,
+            "checks": setup_checks(settings, output, audio, web_ui=(config.WEB_DIST / "index.html").is_file()),
             "sets_rev": self.store.rev,
             "media_rev": int(getattr(self.media, "rev", 0) or 0),
             "version": __version__,
@@ -408,7 +450,8 @@ class Engine:
     def _output_status(self, settings: Settings) -> dict[str, Any]:
         d = self._driver
         st: dict[str, Any] = {"driver": settings.output.driver, "ok": False, "error": self._driver_error,
-                              "interface": settings.output.interface}
+                              "interface": settings.output.interface,
+                              "problems": [self._driver_problem] if self._driver_problem else []}
         if d is not None:
             try:
                 st.update(d.status())
@@ -424,7 +467,8 @@ class Engine:
         st: dict[str, Any] = {"ok": True, "error": None, "device": settings.audio.device, "device_name": None,
                               "volume": settings.audio.volume, "voices": 0}
         if type(self.audio) is NullAudio:     # the sound libraries did not load
-            st.update(ok=False, error="No sound output on this machine")
+            p = backend_problem(self.audio.reason)
+            st.update(ok=False, error=p["title"], problems=[p])
             return st
         try:
             st.update(self.audio.status())
@@ -446,6 +490,7 @@ class Engine:
         with self._lock:
             self._poll_sets()
             test = self._test
+            test_card = self._test_card
             ed = self._editor
             ed_live = ed is not None and ed.live
             sign_lookahead, upcoming_player, sign_t = self._advance_sign(dt, frozen=ed_live)
@@ -474,10 +519,11 @@ class Engine:
             if ed_live and test is None:
                 frame, cues, playing = ed_frame, ed_cues, ed_playing
         if test is not None:
-            frame, cues = test, []
+            # The wizard changes the mapping while the wiring picture is up: the preview follows it.
+            frame, cues = (test if test_card is None else card_preview(settings)), []
 
         self.sign_frame.put(frame)
-        self._send(frame, now)
+        self._send(frame, now, test_card)
         try:
             self.audio.sync(cues, playing)
         except Exception as e:
@@ -680,22 +726,25 @@ class Engine:
             msg = str(e) or type(e).__name__
             if msg != self._driver_error:
                 log.warning("output %s unavailable: %s", settings.output.driver, msg)
-            self._driver_error = msg
+            self._driver_error, self._driver_problem = msg, _failure(e, msg)
             self._driver_retry_at = now + DRIVER_RETRY
             return
         self._driver = d
-        self._driver_error = None
+        self._driver_error = self._driver_problem = None
 
-    def _send(self, frame: np.ndarray, now: float) -> None:
+    def _send(self, frame: np.ndarray, now: float, card: Optional[np.ndarray] = None) -> None:
         d = self._driver
         if d is None:
             return
         try:
-            d.send(frame.copy())   # drivers may work in place; the preview keeps the original
+            if card is not None:
+                d.send_card(card.copy())
+            else:
+                d.send(frame.copy())   # drivers may work in place; the preview keeps the original
         except Exception as e:
             msg = str(e) or type(e).__name__
             log.warning("output send failed, reopening in %.0f s: %s", DRIVER_RETRY, msg)
             self._safe(d.close, "driver close")
             self._driver = None
-            self._driver_error = msg
+            self._driver_error, self._driver_problem = msg, _failure(e, msg)
             self._driver_retry_at = now + DRIVER_RETRY

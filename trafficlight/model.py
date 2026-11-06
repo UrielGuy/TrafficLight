@@ -11,6 +11,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .output import wiring
+
 Target = Literal["face0", "face1", "face2", "all", "audio"]
 FACE_TARGETS = ("face0", "face1", "face2")
 
@@ -81,9 +83,26 @@ class OutputSettings(BaseModel):
     brightness: float = 0.5            # 0..1
     gamma: float = 1.0                 # applied in software before sending (1.0 = leave to the receiver card)
     rotate180: bool = False            # whole sign upside down
-    panel_order: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5])   # canvas panel (top..bottom) -> position in the card's image
+    panel_order: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5])   # panel (top..bottom) -> the card's band it is on
+                                       # = connector number - 1 (0..PORTS-1, all different); see output/wiring.py
     panel_flip: list[bool] = Field(default_factory=lambda: [False] * 6)          # panel mounted rotated 180 degrees
     color_order: Literal["rgb", "rbg", "grb", "gbr", "brg", "bgr"] = "rgb"   # byte order on the wire; this card probably needs "bgr" (docs/HARDWARE.md)
+
+    @field_validator("panel_order")
+    @classmethod
+    def _order_fits_the_card(cls, v: list[int]) -> list[int]:
+        problem = wiring.order_problem(v)
+        if problem:
+            raise ValueError(problem)
+        return v
+
+    @field_validator("panel_flip")
+    @classmethod
+    def _one_flip_per_panel(cls, v: list[bool]) -> list[bool]:
+        problem = wiring.flip_problem(v)
+        if problem:
+            raise ValueError(problem)
+        return v
 
 
 class AudioSettings(BaseModel):

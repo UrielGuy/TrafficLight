@@ -95,15 +95,6 @@ export function ConnectionBanner() {
   return <div className="conn-banner" role="alert">Connection to the sign controller lost. Reconnecting…</div>;
 }
 
-export function Warning({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="warning" role="alert">
-      <strong>{title}</strong>
-      <div>{children}</div>
-    </div>
-  );
-}
-
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>;
 }

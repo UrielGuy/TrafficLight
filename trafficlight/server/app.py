@@ -71,7 +71,10 @@ def _problem(e: ValidationError) -> str:
     parts = []
     for err in e.errors():
         loc = ".".join(str(x) for x in err.get("loc", ()) if x != "body")
-        parts.append(f"{loc}: {err.get('msg')}" if loc else str(err.get("msg")))
+        msg = str(err.get("msg"))
+        if err.get("type") == "value_error":      # pydantic prefixes our own messages with "Value error, "
+            msg = msg.removeprefix("Value error, ")
+        parts.append(f"{loc}: {msg}" if loc else msg)
     return "; ".join(parts) or "Invalid data"
 
 

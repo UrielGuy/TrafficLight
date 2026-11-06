@@ -15,13 +15,14 @@ and byte 13 is already payload.
 * 0x07 detect, 284 bytes, [16] receiver index; the card answers with
   EtherType 0x0805, 1070 bytes (see parse_reply).
 
-A frame is: brightness packet, one row packet per row (128 pixels: one
-packet each), a pause until the rows are on the wire plus a gap, then the
+A frame is: brightness packet, one row packet per row of the card's image
+(CARD_H rows: every connector's band, also those without a panel; 128
+pixels: one packet each), a pause until the rows are on the wire plus a gap, then the
 display packet (twice for firmware 13 and later, as FPP does).
 
-send() only copies the frame into a slot; a sender thread maps it, builds
-the packets in place and sends the newest frame, dropping any it could not
-get to.
+send() (and send_card()) only copies the picture into a slot; a sender
+thread maps it, builds the packets in place and sends the newest one,
+dropping any it could not get to.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ import numpy as np
 
 from .. import config
 from ..model import OutputSettings
-from .base import NetInterface, OutputDriver, OutputError
+from .base import NetInterface, OutputDriver, OutputError, problem
 from .mapping import Mapper, gamma_lut, validate
 from .rawsock_base import RawSocket, list_raw_interfaces, open_raw
 
@@ -259,11 +260,11 @@ class ColorlightDriver(OutputDriver):
         self.options = options or ColorlightOptions.from_env()
         self._opener = opener
         self._brightness = min(max(settings.brightness, 0.0), 1.0)
-        self._config_error: str | None = None
+        self._config_problem: dict[str, Any] | None = None
         self._mapper = self._make_mapper(self.settings)
         self._sock: RawSocket | None = None
-        self._open_error: str | None = None
-        self._send_error: str | None = None
+        self._open_problem: dict[str, Any] | None = None
+        self._send_problem: dict[str, Any] | None = None
         self._link: tuple[bool | None, int | None] = (None, None)
         self._receiver: ReceiverInfo | None = None
         self._detect_tries = 0
@@ -271,9 +272,10 @@ class ColorlightDriver(OutputDriver):
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._pending: np.ndarray | None = None
-        self._spare = np.empty((config.H, config.W, 3), np.uint8)
-        self._last: np.ndarray | None = None
+        # A picture is (is_card, buffer): a sign frame for the mapper, or a ready card image.
+        self._pending: tuple[bool, np.ndarray] | None = None
+        self._last: tuple[bool, np.ndarray] | None = None
+        self._spare: dict[bool, np.ndarray | None] = {False: np.empty((config.H, config.W, 3), np.uint8), True: None}
         self._resend = False
         self._levels_dirty = True
         self._stats = _Stats()
@@ -285,28 +287,19 @@ class ColorlightDriver(OutputDriver):
         try:
             self._sock = self._opener(self.settings.interface or "")
         except OutputError as e:
-            self._open_error = str(e)
+            self._open_problem = e.as_problem()
             raise
-        self._open_error = None
+        self._open_problem = None
         self._link = self._sock.link()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="colorlight-sender", daemon=True)
         self._thread.start()
 
     def send(self, frame: np.ndarray) -> None:
-        if self._thread is None:
-            return
-        if frame.shape != (config.H, config.W, 3):
-            raise ValueError(f"frame must be {(config.H, config.W, 3)}, got {frame.shape}")
-        with self._lock:
-            if self._pending is not None:
-                self._stats.dropped += 1
-                slot = self._pending
-            else:
-                slot = self._spare
-            np.copyto(slot, frame, casting="unsafe")
-            self._pending = slot
-        self._wake.set()
+        self._offer(frame, False)
+
+    def send_card(self, image: np.ndarray) -> None:
+        self._offer(image, True)
 
     def set_brightness(self, value: float) -> None:
         self._brightness = min(max(float(value), 0.0), 1.0)
@@ -326,21 +319,45 @@ class ColorlightDriver(OutputDriver):
             self._sock.close()
             self._sock = None
 
+    def problems(self) -> list[dict[str, Any]]:
+        """What stands between this driver and a working sign, most basic first (output/base.problem)."""
+        up, mbps = self._link
+        rec = self._receiver
+        out = [p for p in (self._open_problem, self._config_problem) if p is not None]
+        if self._thread is not None and up is False:
+            out.append(problem("output.link", "No link on the network port",
+                               "No link on the Ethernet port the card is on.",
+                               "Check the cable between the computer and the card's port A or B, and that the card is "
+                               "powered (its red LED is on)."))
+        if up and mbps is not None and mbps < 1000:
+            out.append(problem("output.link", "The link is not gigabit",
+                               f"The link runs at {mbps} Mb/s; the card only works at 1000 Mb/s.",
+                               "Use a gigabit port and a Cat5e or Cat6 cable plugged straight into the card, "
+                               "not through a 100 Mb/s switch."))
+        if self._send_problem is not None:
+            out.append(self._send_problem)
+        if (self._thread is not None and up is not False and self.options.detect and rec is None
+                and self._detect_tries >= 2):
+            out.append(problem("output.receiver", "No receiver card answered",
+                               "No receiver card answered the detection packets on this port.",
+                               "Check the cable, the card's power (red LED) and that the link is gigabit; check that "
+                               "the chosen interface is the port the card is plugged into."))
+        if rec and (rec.width, rec.height) != (config.W, config.CARD_H):
+            out.append(problem("output.card_size", "The receiver card is not set up for this sign",
+                               f"The card is configured for {rec.width}x{rec.height}; it must be {config.W}x{config.CARD_H} "
+                               f"({config.PORTS} modules of {config.PANEL_W}x{config.PANEL_H}, J1..J{config.PORTS} "
+                               "from the top).",
+                               "Run the receiver setup in LEDVision once (docs/HARDWARE.md, section 4). The server "
+                               "asks the card again every few seconds, so this clears by itself afterwards."))
+        return out
+
     def status(self) -> dict[str, Any]:
         up, mbps = self._link
         rec = self._receiver
-        warnings = []
-        if up and mbps is not None and mbps < 1000:
-            warnings.append(f"Link is {mbps} Mb/s; the card needs gigabit Ethernet")
-        if rec and (rec.width, rec.height) != (config.W, config.H):
-            warnings.append(f"The card is configured for {rec.width}x{rec.height}, the sign is "
-                            f"{config.W}x{config.H}: redo the receiver setup in LEDVision")
-        error = (self._open_error or self._config_error or
-                 (None if self._thread is None else
-                  ("No link on the network port (cable unplugged or card unpowered?)" if up is False else None)) or
-                 self._send_error)
-        if error is None and self._thread is not None and self.options.detect and rec is None and self._detect_tries >= 2:
-            error = "No receiver card answered (check the cable, the card's power and that the link is gigabit)"
+        problems = self.problems()
+        text = lambda p: f"{p['detail']} {p['fix']}" if p["fix"] else p["detail"]
+        error = next((text(p) for p in problems if p["level"] == "error"), None)
+        warnings = [text(p) for p in problems if p["level"] == "warning"]
         s = self._stats
         times = list(s.times)
         fps = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 and times[-1] > times[0] else 0.0
@@ -348,8 +365,9 @@ class ColorlightDriver(OutputDriver):
             fps = 0.0
         return {
             "driver": "colorlight", "ok": error is None, "error": error,
-            "interface": self.settings.interface, "open": self._thread is not None,
-            "link": up, "link_mbps": mbps, "warnings": warnings,
+            "interface": self.settings.interface, "interface_name": self._sock.label if self._sock else None,
+            "open": self._thread is not None, "link": up, "link_mbps": mbps, "warnings": warnings,
+            "problems": problems, "detecting": self.options.detect,
             "receiver": rec.to_json() if rec else None,
             "receiver_found": rec is not None,
             "sent_fps": round(fps, 1), "frames": s.frames, "dropped": s.dropped,
@@ -370,13 +388,37 @@ class ColorlightDriver(OutputDriver):
             self.open()
 
     # ---- internals
+    def _offer(self, picture: np.ndarray, card: bool) -> None:
+        if self._thread is None:
+            return
+        shape = (config.CARD_H if card else config.H, config.W, 3)
+        if picture.shape != shape:
+            raise ValueError(f"{'card image' if card else 'frame'} must be {shape}, got {picture.shape}")
+        with self._lock:
+            pending = self._pending
+            if pending is not None:
+                self._stats.dropped += 1
+            if pending is not None and pending[0] == card:
+                slot = pending[1]
+            else:
+                if pending is not None:
+                    self._spare[pending[0]] = pending[1]
+                slot = self._spare[card]
+                self._spare[card] = None
+                if slot is None:
+                    slot = np.empty(shape, np.uint8)
+            np.copyto(slot, picture, casting="unsafe")
+            self._pending = (card, slot)
+        self._wake.set()
+
     def _make_mapper(self, s: OutputSettings) -> Mapper:
         try:
             validate(s)
-            self._config_error = None
+            self._config_problem = None
             return Mapper(s)
         except ValueError as e:
-            self._config_error = f"Output settings ignored: {e}"
+            self._config_problem = problem("output.settings", "Output settings ignored", f"Output settings ignored: {e}",
+                                           "Run Settings → Panel wiring again, or fix the values in data/settings.json.")
             return Mapper(OutputSettings(gamma=s.gamma if s.gamma > 0 else 1.0))
 
     def _packets_per_frame(self) -> int:
@@ -413,7 +455,7 @@ class ColorlightDriver(OutputDriver):
         return gamma_lut(1.0, b) if soft else None
 
     def _build(self, sock: RawSocket):
-        enc = FrameEncoder(config.W, config.H, sock.header_room, self._sync_repeat())
+        enc = FrameEncoder(config.W, config.CARD_H, sock.header_room, self._sync_repeat())
         spans = ([enc.brightness_span] if self.options.brightness_packet != "off" else []) + enc.row_spans
         self._enc = enc
         self._rows_batch = sock.prepare(enc.rows, spans)
@@ -438,9 +480,9 @@ class ColorlightDriver(OutputDriver):
                     try:
                         self._sock = sock = self._opener(self.settings.interface or "")
                         self._build(sock)
-                        self._send_error = None
+                        self._send_problem = None
                     except OutputError as e:
-                        self._send_error = str(e)
+                        self._send_problem = e.as_problem()
                 continue
             if now >= next_link:
                 next_link = now + 1.0
@@ -449,7 +491,11 @@ class ColorlightDriver(OutputDriver):
                 if self._link[0] and was_up is False:
                     self._receiver, self._detect_tries, next_detect = None, 0, now
             self._poll_replies(sock)
-            if self.options.detect and self._receiver is None and now >= next_detect and self._link[0] is not False:
+            # Ask until a card answers, and keep asking while it reports the wrong size: its setup in
+            # LEDVision can be fixed while the server runs.
+            rec = self._receiver
+            if (self.options.detect and (rec is None or (rec.width, rec.height) != (config.W, config.CARD_H))
+                    and now >= next_detect and self._link[0] is not False):
                 try:
                     sock.send(detect_packet(0))
                 except OSError:
@@ -462,15 +508,16 @@ class ColorlightDriver(OutputDriver):
                 continue
             self._wake.clear()
             with self._lock:
-                frame = self._pending
-                if frame is not None:
+                picture = self._pending
+                if picture is not None:
                     self._pending = None
-                    self._spare = self._last if self._last is not None else np.empty_like(frame)
-                    self._last = frame
+                    if self._last is not None:
+                        self._spare[self._last[0]] = self._last[1]
+                    self._last = picture
                 elif self._resend:
-                    frame = self._last
+                    picture = self._last
                 self._resend = False
-            if frame is None:
+            if picture is None:
                 continue
             if self._link[0] is False:
                 self._stats.dropped += 1
@@ -479,11 +526,13 @@ class ColorlightDriver(OutputDriver):
                 self._levels_dirty = False
                 soft_lut = self._apply_levels(self._enc)
             try:
-                self._send_frame(sock, frame, soft_lut)
-                self._send_error = None
+                self._send_frame(sock, picture, soft_lut)
+                self._send_problem = None
             except (OSError, OutputError) as e:
                 self._stats.dropped += 1
-                self._send_error = f"Sending failed: {e}"
+                self._send_problem = problem("output.send", "Sending to the card failed", f"Sending failed: {e}",
+                                             "The driver keeps retrying. If it goes on, check the adapter (a USB "
+                                             "adapter may have been unplugged) and its cable.")
                 if (sock.link()[0] is False or isinstance(e, OutputError)
                         or getattr(e, "errno", None) in (errno.ENOBUFS, errno.EAGAIN)):
                     continue
@@ -492,9 +541,10 @@ class ColorlightDriver(OutputDriver):
                 self._sock = None
                 next_reopen = now + 1.0
 
-    def _send_frame(self, sock: RawSocket, frame: np.ndarray, soft_lut: np.ndarray | None) -> None:
+    def _send_frame(self, sock: RawSocket, picture: tuple[bool, np.ndarray], soft_lut: np.ndarray | None) -> None:
         t0 = time.perf_counter()
-        img = self._mapper.apply(frame)
+        card, data = picture
+        img = self._mapper.apply_card(data) if card else self._mapper.apply(data)
         if soft_lut is not None:
             np.take(soft_lut, img, out=img)
         self._enc.pixels[...] = img

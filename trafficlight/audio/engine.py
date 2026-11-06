@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, Protocol
 
 from ..render.base import AudioCue
-from .base import AudioDevice, AudioEngine
+from .base import AudioDevice, AudioEngine, device_problem
 from .mixer import Mixer
 
 log = logging.getLogger(__name__)
@@ -113,6 +113,7 @@ class SoundDeviceEngine(AudioEngine):
         self._device: Optional[str] = None
         self._device_name: Optional[str] = None
         self._error: Optional[str] = None
+        self._error_code: Optional[str] = None  # which audio.base.device_problem() it is
         self._dirty = True
         self._closed = False
         self._cb_calls = 0
@@ -149,8 +150,10 @@ class SoundDeviceEngine(AudioEngine):
 
     def status(self) -> dict[str, Any]:
         with self._lock:
+            problems = [] if self._error is None else [device_problem(self._error_code or "open_failed", self._error)]
             return {"ok": self._error is None, "error": self._error, "device": self._device,
-                    "device_name": self._device_name, "volume": self._mixer.volume, "voices": self._mixer.voice_count()}
+                    "device_name": self._device_name, "volume": self._mixer.volume, "voices": self._mixer.voice_count(),
+                    "problems": problems}
 
     def close(self) -> None:
         if self._closed:
@@ -205,7 +208,7 @@ class SoundDeviceEngine(AudioEngine):
                 stream = self._stream
             lost = stream is not None and not getattr(stream, "active", True)
             if lost:
-                self._set_error("The sound device stopped (unplugged?)", keep_device=True)
+                self._set_error("The sound device stopped (unplugged?)", "lost", keep_device=True)
                 self._drop_stream()
             elif stream is None and not dirty and self._error is not None and time.monotonic() >= next_try:
                 dirty = True
@@ -218,11 +221,11 @@ class SoundDeviceEngine(AudioEngine):
                     if not self._dirty:
                         self._settled.set()
                 if not ok and self._error is None:
-                    self._error = "Could not open the sound device"
+                    self._set_error("Could not open the sound device", "open_failed", keep_device=True)
 
-    def _set_error(self, msg: str, keep_device: bool = False) -> None:
+    def _set_error(self, msg: str, code: str, keep_device: bool = False) -> None:
         with self._lock:
-            self._error = msg
+            self._error, self._error_code = msg, code
             if not keep_device:
                 self._device_name = None
 
@@ -279,13 +282,14 @@ class SoundDeviceEngine(AudioEngine):
             msg = str(exc) or type(exc).__name__
             if not isinstance(exc, LookupError):
                 msg = f"Could not open the sound device: {msg}"
+            code = "open_failed" if not isinstance(exc, LookupError) else "no_device" if wanted is None else "device_missing"
             log.warning("audio: %s", msg)
             with self._lock:
-                self._error, self._device_name = msg, None
+                self._error, self._error_code, self._device_name = msg, code, None
                 self._device = wanted
             return False
         with self._lock:
             self._stream = stream
-            self._error = None
+            self._error = self._error_code = None
             self._device, self._device_name = dev_id, dev.name
         return True

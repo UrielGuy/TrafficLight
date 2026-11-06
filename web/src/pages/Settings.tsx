@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import type { AudioDevice, ColorOrder, NetInterface, Settings, TestPattern } from '../api/types';
 import { Field, Segmented, Slider, Toggle } from '../components/ui';
-import { patchSettings, settingsRes, useSettings } from '../state/app';
+import { SetupList } from '../components/SetupChecks';
+import { patchSettings, settingsRes, useAppState, useSettings } from '../state/app';
 import { useDebouncedValue } from '../state/hooks';
 import { attempt } from '../state/toast';
+import { PANEL_NAMES, PORTS, fromSeen, sameSeen, seenProblems, toSeen, type Seen } from './wiring';
 
 const PATTERNS: TestPattern[] = ['panels', 'white', 'red', 'green', 'blue', 'gradient', 'off'];
 const COLOR_ORDERS: ColorOrder[] = ['rgb', 'rbg', 'grb', 'gbr', 'brg', 'bgr'];
@@ -25,11 +27,22 @@ export default function SettingsPage() {
   return (
     <div className="page">
       <h1>Settings</h1>
+      <SetupCard />
       <AudioCard s={s} devices={devices} />
       <OutputCard s={s} ifaces={ifaces} />
-      <PanelsCard s={s} />
+      <WiringCard s={s} />
       <LightsCard s={s} />
     </div>
+  );
+}
+
+function SetupCard() {
+  const checks = useAppState()?.checks;
+  return (
+    <section className="card setup">
+      <h2>Setup</h2>
+      {checks ? <SetupList checks={checks} /> : <p className="muted small">Waiting for the controller…</p>}
+    </section>
   );
 }
 
@@ -71,7 +84,7 @@ function OutputCard({ s, ifaces }: { s: Settings; ifaces: NetInterface[] | null 
       </Field>
       <Field label="Brightness"><Slider label="Brightness" value={brightness} min={0} max={1} step={0.01} onChange={setBrightness} format={(v) => `${Math.round(v * 100)}%`} /></Field>
       <Field label="Gamma"><Slider label="Gamma" value={gamma} min={0.5} max={3} step={0.05} onChange={setGamma} format={(v) => v.toFixed(2)} /></Field>
-      <Field label="Rotate 180°"><Toggle label="Rotate 180 degrees" checked={o.rotate180} onChange={(v) => void patchSettings({ output: { rotate180: v } })} /></Field>
+      <Field label="Rotate 180°" hint="Turns the whole picture over. Panel wiring (below) switches it off and handles upside-down panels itself."><Toggle label="Rotate 180 degrees" checked={o.rotate180} onChange={(v) => void patchSettings({ output: { rotate180: v } })} /></Field>
       <Field label="Colour order" hint="If red looks green or blue, change this.">
         <select value={o.color_order} onChange={(e) => void patchSettings({ output: { color_order: e.target.value as ColorOrder } })}>
           {COLOR_ORDERS.map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}
@@ -86,50 +99,110 @@ function OutputCard({ s, ifaces }: { s: Settings; ifaces: NetInterface[] | null 
   );
 }
 
-function PanelsCard({ s }: { s: Settings }) {
-  const { panel_order: order, panel_flip: flip } = s.output;
-  const setOrder = (panel: number, pos: number) => {
-    // keep it a permutation: whoever had `pos` gets this panel's old position
-    const next = order.slice();
-    const other = next.indexOf(pos);
-    if (other >= 0) next[other] = next[panel];
-    next[panel] = pos;
-    void patchSettings({ output: { panel_order: next } });
+function WiringCard({ s }: { s: Settings }) {
+  const o = s.output;
+  const now = useAppState()?.now;
+  const showing = now?.source === 'test' ? now.set_name : null;
+  const saved = useMemo(() => toSeen(o.panel_order, o.panel_flip, o.rotate180), [o.panel_order, o.panel_flip, o.rotate180]);
+  // null = follow the saved settings; the first edit takes a copy.
+  const [draft, setDraft] = useState<Seen[] | null>(null);
+  const [applied, setApplied] = useState<number[] | null>(null);   // after Apply: the panels that were dark
+  const seen = draft ?? saved;
+  const problems = seenProblems(seen);
+  const bad = new Set(problems.flatMap((p) => p.panels));
+  const changed = !sameSeen(seen, saved) || o.rotate180;
+  const result = problems.length ? null : fromSeen(seen);
+
+  const edit = (i: number, v: Seen) => {
+    const next = seen.slice();
+    next[i] = v;
+    setDraft(next);
+    setApplied(null);
   };
-  const setFlip = (panel: number, v: boolean) => {
-    const next = flip.slice();
-    next[panel] = v;
-    void patchSettings({ output: { panel_flip: next } });
+  const apply = async () => {
+    if (!result) return;
+    const ok = await patchSettings({ output: { ...result, rotate180: false } });
+    if (ok) {
+      setApplied(seen.flatMap((x, i) => (x ? [] : [i])));
+      setDraft(null);
+    }
   };
+  const test = (p: TestPattern) => attempt(() => api.outputTest(p));
+
   return (
-    <section className="card">
-      <h2>Panels</h2>
-      <p className="muted small">The six panels as you see the sign from the front, top to bottom. Use the test pattern "Panels" to see which is which on the real sign. "Position" is where the panel sits in the receiver card's image.</p>
-      <div className="panel-stack">
-        {order.map((pos, i) => {
-          const light = Math.floor(i / 2);
-          return (
-            <div key={i} className="panel-row">
-              <div className={`panel-box ${flip[i] ? 'flipped' : ''}`} style={{ borderColor: s.face_colors[light] }}>
-                <span className="panel-num">{i + 1}</span>
-                <span className="panel-arrow" title={flip[i] ? 'Mounted upside down' : 'Mounted upright'}>▲</span>
-              </div>
-              <div className="panel-ctl">
-                <div className="small muted">{LIGHT_NAMES[light]} light, {i % 2 === 0 ? 'upper' : 'lower'} half</div>
-                <div className="row">
-                  <label className="inline-field">Position
-                    <select value={pos} onChange={(e) => setOrder(i, Number(e.target.value))}>
-                      {order.map((_, p) => <option key={p} value={p}>{p + 1}</option>)}
-                    </select>
-                  </label>
-                  <label className="inline-field"><Toggle label={`Flip panel ${i + 1}`} checked={flip[i]} onChange={(v) => setFlip(i, v)} /> Flip 180°</label>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+    <section className="card wiring">
+      <h2>Panel wiring</h2>
+      <ol className="wiring-steps muted small">
+        <li>Press <b>Show connector numbers</b>. Each panel shows the number of the card connector (J1 to J{PORTS}) its cable is plugged into, and an arrow.</li>
+        <li>Standing in front of the sign, enter for each panel below the number it shows and which way its arrow points. If the arrow points down, the panel hangs upside down and so does its number: the bar belongs under the number (a "9" with the bar on top is a 6).</li>
+        <li>Press <b>Apply</b>. This sets the panel order and flips, and switches "Rotate 180°" off: the arrows already say which panels are upside down.</li>
+      </ol>
+      <div className="row wiring-buttons">
+        <button className={showing === 'wiring' ? 'primary' : ''} onClick={() => test('wiring')}>Show connector numbers</button>
+        <button onClick={() => test('off')} disabled={!showing}>Stop test picture</button>
       </div>
+
+      <div className="wiring-sign" role="group" aria-label="The sign from the front">
+        {LIGHT_NAMES.map((light, f) => (
+          <div key={light} className="wiring-light" style={{ borderColor: s.face_colors[f] }}>
+            {[2 * f, 2 * f + 1].map((i) => (
+              <WiringRow key={i} index={i} seen={seen[i]} bad={bad.has(i)} onChange={(v) => edit(i, v)} />
+            ))}
+          </div>
+        ))}
+      </div>
+
+      {problems.map((p) => <p key={p.message} className="wiring-problem" role="alert">{p.message}</p>)}
+      {result && seen.some((x) => x === null) && (
+        <p className="muted small">
+          {seen.flatMap((x, i) => (x ? [] : [`${PANEL_NAMES[i]} (given the free connector J${result.panel_order[i] + 1} for now)`])).join('; ')}:
+          {' '}a panel that shows nothing has a loose or broken cable, no power, or sits on a dead connector. The other panels are saved as entered; fix it and run this again.
+        </p>
+      )}
+      <div className="row wiring-buttons">
+        <button className="primary" disabled={!result} onClick={() => void apply()}>Apply</button>
+        {draft && <button onClick={() => { setDraft(null); setApplied(null); }}>Back to saved</button>}
+        {!changed && !applied && <span className="muted small">Matches the saved settings.</span>}
+      </div>
+
+      {applied && (
+        <div className="wiring-done" role="status">
+          <p><b>Saved.</b> Check it: press <b>Show panels 1–6</b>. The sign should read 1 to 6 from the top, all upright, each with its white triangle in the top-left corner.
+            {applied.length > 0 && ' Panels that showed nothing stay dark until they are fixed.'}</p>
+          <div className="row">
+            <button className="primary" onClick={() => test('panels')}>Show panels 1–6</button>
+            <button onClick={() => test('off')}>Back to the show</button>
+          </div>
+        </div>
+      )}
+      <p className="muted small">A number that looks mirrored (not upside down), stripes, or half a panel dark cannot be fixed here: that is the receiver setup in LEDVision (docs/HARDWARE.md, section 4).</p>
     </section>
+  );
+}
+
+function WiringRow({ index, seen, bad, onChange }: { index: number; seen: Seen; bad: boolean; onChange: (v: Seen) => void }) {
+  const name = PANEL_NAMES[index];
+  return (
+    <div className={`wiring-row ${bad ? 'bad' : ''}`}>
+      <div className={`wiring-panel ${seen?.down ? 'down' : ''} ${seen ? '' : 'dark'}`} aria-hidden="true">
+        {seen ? <><span className="wiring-num">{seen.connector}</span><span className="wiring-arrow">↑</span></> : <span className="wiring-none">dark</span>}
+      </div>
+      <div className="wiring-ctl">
+        <div className="wiring-name">{name}</div>
+        <div className="row">
+          <select aria-label={`Number on ${name}`} value={seen ? String(seen.connector) : ''}
+            onChange={(e) => onChange(e.target.value ? { connector: Number(e.target.value), down: seen?.down ?? false } : null)}>
+            {Array.from({ length: PORTS }, (_, b) => <option key={b} value={b + 1}>{b + 1}</option>)}
+            <option value="">Nothing (dark)</option>
+          </select>
+          {seen && (
+            <Segmented value={seen.down ? 'down' : 'up'}
+              options={[{ value: 'up', label: '↑ Up' }, { value: 'down', label: '↓ Down' }]}
+              onChange={(v) => onChange({ connector: seen.connector, down: v === 'down' })} />
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -13,6 +13,11 @@ PANEL_W = 128
 PANEL_H = 64
 PANELS = 6
 
+# The receiver card's image: one 64-row band per HUB75 connector, band b = connector J(b+1), from the top.
+# Bands without a panel are sent black; Settings.output.panel_order says which band each panel is on.
+PORTS = 8
+CARD_H = PORTS * PANEL_H
+
 FACE_RADIUS = FACE / 2    # the lit disc fills its 128 px box edge to edge
 RING_WIDTH = 2.0      # outline ring of an unlit light
 TEXT_RADIUS = 61.0    # text is fitted inside this: a small margin to the light's edge, and the old sign's layouts

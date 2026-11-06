@@ -174,6 +174,19 @@ export interface Problem {
 }
 
 export type NowSource = 'schedule' | 'show' | 'editor' | 'test' | 'idle';
+
+/** One setup check (trafficlight/checks.py). error = the sign or the sound cannot work; warning = works, but
+ * something is off; info = a neutral note or a hint; ok = fine. Ids are stable: output.driver, output.interface,
+ * output.access, output.settings, output.link, output.send, output.receiver, output.card_size, output.wiring,
+ * audio.backend, audio.device, server.web_ui. */
+export type CheckLevel = 'error' | 'warning' | 'info' | 'ok';
+export interface SetupCheck {
+  id: string;
+  level: CheckLevel;
+  title: string;
+  detail: string;
+  fix: string | null;
+}
 export interface State {
   now: {
     source: NowSource;
@@ -191,6 +204,7 @@ export interface State {
   };
   output: { driver: string; ok: boolean; error: string | null; interface: string | null; fps: number };
   audio: { ok: boolean; error: string | null; device: string | null; device_name: string | null; volume: number; voices: number };
+  checks: SetupCheck[];   // in a fixed order, most basic first
   sets_rev: number;
   media_rev: number;
   version: string;
@@ -210,7 +224,7 @@ export interface NetInterface {
   up: boolean;
 }
 
-export type TestPattern = 'off' | 'panels' | 'white' | 'red' | 'green' | 'blue' | 'gradient';
+export type TestPattern = 'off' | 'panels' | 'white' | 'red' | 'green' | 'blue' | 'gradient' | 'wiring';
 export type ShowTarget = 'face0' | 'face1' | 'face2' | 'all' | 'faces';
 export interface Peaks {
   rate: number;

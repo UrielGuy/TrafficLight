@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import SignPreview from '../components/SignPreview';
-import { Empty, Field, Slider, Toggle, Warning } from '../components/ui';
+import { Empty, Field, Slider, Toggle } from '../components/ui';
+import { AttentionList } from '../components/SetupChecks';
 import { patchSettings, setsRes, settingsRes, signFeed, useAppState, useSets, useSettings } from '../state/app';
 import { formatTime, useDebouncedValue } from '../state/hooks';
 import { attempt } from '../state/toast';
@@ -69,12 +70,7 @@ export default function Dashboard() {
   return (
     <div className="page">
       <h1>Dashboard</h1>
-      {state && !state.output.ok && (
-        <Warning title="The LED output is not working">{state.output.error ?? 'Unknown error'}{state.output.interface ? ` (interface: ${state.output.interface})` : ''}</Warning>
-      )}
-      {state && !state.audio.ok && (
-        <Warning title="The audio output is not working">{state.audio.error ?? 'Unknown error'}{state.audio.device_name ? ` (device: ${state.audio.device_name})` : ''}</Warning>
-      )}
+      {state && <AttentionList checks={state.checks ?? []} />}   {/* a server older than the checks sends none */}
 
       <div className="dash-top">
         <div className="preview-col">

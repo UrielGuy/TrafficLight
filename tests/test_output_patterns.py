@@ -73,6 +73,20 @@ def test_build_settings_uses_saved_then_overrides(tmp_path, monkeypatch):
     assert testpattern.build_settings(args("--raw")).color_order == "rgb"
 
 
+def test_tool_takes_what_the_panels_showed(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRAFFICLIGHT_DATA", str(tmp_path))
+    assert testpattern.parse_seen("3, 8d,2u,1D,-,4") == [(3, False), (8, True), (2, False), (1, True), None, (4, False)]
+    s = testpattern.build_settings(args("--seen", "3,8d,2,1d,5,4d", "--raw"))
+    assert s.panel_order == [2, 7, 1, 0, 4, 3] and s.panel_flip == [False, True, False, True, False, True]
+    assert not s.rotate180
+    with pytest.raises(ValueError):
+        testpattern.build_settings(args("--seen", "3,3,2,1,5,4"))
+    with pytest.raises(ValueError):
+        testpattern.build_settings(args("--seen", "3,8d,2,1d,5,4", "--rotate180"))
+    with pytest.raises(ValueError):
+        testpattern.parse_seen("3,x,2,1,5,4")
+
+
 def test_tool_reports_unknown_interface(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("TRAFFICLIGHT_DATA", str(tmp_path))
     assert testpattern.main(["--iface", "no-such-interface-xyz", "--pattern", "panels", "--seconds", "0.1"]) == 1

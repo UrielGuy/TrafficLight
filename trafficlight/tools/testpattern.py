@@ -2,12 +2,17 @@
 
     python -m trafficlight.tools.testpattern --list
     python -m trafficlight.tools.testpattern --iface ID --detect
-    python -m trafficlight.tools.testpattern --iface ID --pattern panels [--brightness 0.3] [--seconds N]
+    python -m trafficlight.tools.testpattern --iface ID --pattern wiring
+    python -m trafficlight.tools.testpattern --iface ID --pattern panels --seen 3,8d,2,1d,5,4
 
 Mapping settings come from data/settings.json when it exists (what the
 server uses); --raw ignores them, and --order / --flip / --rotate180 /
 --color-order / --gamma override them, so the right values can be found by
-trying them here and then entered in the UI. See docs/HARDWARE.md.
+trying them here and then entered in the UI. "wiring" shows each connector's
+number and an arrow, past the mapping; --seen takes what the panels showed
+(top to bottom: the number, "d" if the arrow pointed down, "-" for a dark
+panel) and works out panel_order and panel_flip, the rule of the web UI's
+wiring wizard. See docs/HARDWARE.md.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ from ..output import patterns
 from ..output.base import OutputError
 from ..output.colorlight import ColorlightDriver, ColorlightOptions, detect, list_interfaces
 from ..output.rawsock_base import open_raw
+from ..output.wiring import Seen, from_seen
 
 
 def _saved_output() -> OutputSettings | None:
@@ -40,11 +46,31 @@ def _ints(text: str) -> list[int]:
     return [int(x) for x in text.replace(" ", "").split(",") if x != ""]
 
 
+def parse_seen(text: str) -> list[Seen]:
+    """ "3,8d,2,1d,5,-" -> [(3, False), (8, True), ..., None]."""
+    out: list[Seen] = []
+    for part in text.replace(" ", "").lower().split(","):
+        if part in ("-", "0", ""):
+            out.append(None)
+            continue
+        down = part.endswith("d")
+        num = part[:-1] if down or part.endswith("u") else part
+        if not num.isdigit():
+            raise ValueError(f"--seen: {part!r} is not a connector number, optionally followed by u or d, or -")
+        out.append((int(num), down))
+    return out
+
+
 def build_settings(a: argparse.Namespace) -> OutputSettings:
     base = None if a.raw else _saved_output()
     s = (base or OutputSettings()).model_copy(deep=True)
     s.driver = "colorlight"
     s.interface = a.iface
+    if a.seen:
+        if a.order or a.flip or a.rotate180:
+            raise ValueError("--seen sets the order, flips and rotation itself: leave out --order, --flip, --rotate180")
+        s.panel_order, s.panel_flip = from_seen(parse_seen(a.seen))
+        s.rotate180 = False
     if a.order:
         s.panel_order = _ints(a.order)
     if a.flip:
@@ -89,18 +115,21 @@ def cmd_detect(iface: str) -> int:
 
 
 def cmd_show(a: argparse.Namespace) -> int:
+    card = patterns.make_card(a.pattern)
     if a.pattern == "black":
         frame = np.zeros((config.H, config.W, 3), np.uint8)
-    else:
+    elif card is None:
         frame = patterns.make(a.pattern)
         if frame is None:
-            print(f"Unknown pattern {a.pattern!r}; one of: black, {', '.join(patterns.NAMES)}", file=sys.stderr)
+            names = ", ".join(("black",) + patterns.NAMES + patterns.CARD_NAMES)
+            print(f"Unknown pattern {a.pattern!r}; one of: {names}", file=sys.stderr)
             return 2
     s = build_settings(a)
     drv = ColorlightDriver(s, options=ColorlightOptions.parse(a.options))
     drv.open()
     print(f"order {s.panel_order} flip {[int(f) for f in s.panel_flip]} rotate180 {s.rotate180} "
-          f"color_order {s.color_order} gamma {s.gamma} brightness {s.brightness}")
+          f"color_order {s.color_order} gamma {s.gamma} brightness {s.brightness}" +
+          ("  (the wiring picture ignores order, flip and rotate180)" if card is not None else ""))
     period = 1.0 / a.fps if a.fps > 0 else 0.0
     start = time.perf_counter()
     next_frame = start
@@ -110,7 +139,10 @@ def cmd_show(a: argparse.Namespace) -> int:
     try:
         while a.seconds <= 0 or time.perf_counter() - start < a.seconds:
             t = time.perf_counter()
-            drv.send(frame)
+            if card is not None:
+                drv.send_card(card)
+            else:
+                drv.send(frame)
             render_ms = max(render_ms, (time.perf_counter() - t) * 1000)
             sent += 1
             if t >= next_print:
@@ -160,7 +192,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--list", action="store_true", help="list network interfaces and their ids")
     ap.add_argument("--iface", help="interface id (from --list); on Windows the adapter name works too")
     ap.add_argument("--detect", action="store_true", help="ask the receiver card for its firmware and size")
-    ap.add_argument("--pattern", default="panels", help=f"black, {', '.join(patterns.NAMES)}")
+    ap.add_argument("--pattern", default="panels", help=f"black, {', '.join(patterns.NAMES + patterns.CARD_NAMES)}")
     ap.add_argument("--brightness", type=float, help="0..1 (default: saved setting, else 0.5)")
     ap.add_argument("--seconds", type=float, default=0, help="stop after this long (default: until Ctrl+C)")
     ap.add_argument("--fps", type=float, default=60, help="frames per second offered; 0 = as fast as possible")
@@ -169,6 +201,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--order", help="panel_order, e.g. 0,1,2,3,4,5")
     ap.add_argument("--flip", help="panel_flip as 0/1, e.g. 0,1,0,1,0,1")
     ap.add_argument("--rotate180", action="store_true")
+    ap.add_argument("--seen", help="what --pattern wiring showed, top to bottom, e.g. 3,8d,2,1d,5,- "
+                                   "(d = arrow down, - = dark): sets order and flips from it")
     ap.add_argument("--color-order", choices=["rgb", "rbg", "grb", "gbr", "brg", "bgr"])
     ap.add_argument("--gamma", type=float)
     ap.add_argument("--options", help="protocol options, e.g. sync_gap_ms=5,sync_repeat=2 (see HARDWARE.md)")

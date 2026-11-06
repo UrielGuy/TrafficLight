@@ -18,13 +18,17 @@ const NAV = [
 export default function App() {
   useAppBootstrap();
   const state = useAppState();
+  const setupError = state?.checks?.some((c) => c.level === 'error') ?? false;
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand"><span className="dots"><i /><i /><i /></span>TrafficLight</div>
         <nav>
           {NAV.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? 'active' : '')}>{n.label}</NavLink>
+            <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? 'active' : '')}>
+              {n.label}
+              {n.to === '/settings' && setupError && <span className="nav-alert" title="A setup check failed: see Settings" aria-label="(setup problem)" />}
+            </NavLink>
           ))}
         </nav>
         <div className="version">{state ? `v${state.version}` : ''}</div>

@@ -47,14 +47,16 @@ The guide marks how sure each statement is:
 
 ## 3. Data wiring
 
-* Plug panel 1 (the top one) into card port **J1**, panel 2 into **J2**, and
-  so on down to J6. Each cable goes into the panel's **input** connector
-  (the arrows on the panel PCB point away from it). The card has 8 HUB75
-  ports carrying 16 RGB data groups. A 128×64 1/32-scan panel uses one port
-  (two groups) [src: spec; one panel per port: confirm].
-* The port order does not have to be perfect. The software can reorder and
-  rotate the panels (section 7). Only the LEDVision setup (section 4) has to
-  be right for each panel to show a clean 128×64 picture.
+* Plug each panel into whichever card port **J1..J8** is convenient, one
+  panel per port, and mount it whichever way up is convenient. Each cable
+  goes into the panel's **input** connector (the arrows on the panel PCB
+  point away from it). The card has 8 HUB75 ports carrying 16 RGB data
+  groups. A 128×64 1/32-scan panel uses one port (two groups) [src: spec;
+  one panel per port: confirm]. Two ports stay free.
+* Which panel is on which port, and which panels hang upside down, is
+  worked out afterwards from what the panels show (section 6, step 3).
+  Only the LEDVision setup (section 4) has to be right for each panel to
+  show a clean 128×64 picture.
 * **Ethernet:** connect the card's port A or B to the sender's gigabit port
   with a **direct cable**. Either port works, and the other is for chaining
   more cards [src: spec]. The link must run at **1000 Mb/s**. The card does
@@ -101,13 +103,22 @@ version works with this card]
      driver chip. Then answer the wizard's questions by looking at the panel
      (which colour shows, which row or point lights up). [confirm: the exact
      wizard steps for these panels]
-   * Cabinet / box size: **128 wide × 384 high**. That is one module across
-     and six down, with ports J1..J6 feeding modules 1..6 from the top.
-     [confirm: LEDVision's per-port (data group) layout for this cabinet]
+   * Cabinet / box size: **128 wide × 512 high**. That is one module across
+     and **eight** down, with ports J1..J8 feeding modules 1..8 from the
+     top, whether or not a panel hangs on the port. The software sends all
+     eight bands and leaves the two without a panel black.
+     [confirm: that LEDVision accepts a 128×512 cabinet with one 128×64
+     module per port for the 5A-75B; the card's height limit is not
+     verified. LEDVision's per-port (data group) layout for this cabinet:
+     confirm too]
+   * If the card cannot take 512 rows, configure **128 × 384** (J1..J6
+     feeding modules 1..6) and plug the panels into J1..J6 only. That needs
+     a code change: `PORTS = 6` in `trafficlight/config.py` and in
+     `web/src/pages/wiring.ts` (and the few tests that use J7 or J8).
    * Click **Send**. Each panel should now show a clean picture. Then click
      **Save To Receiver**.
 5. **Connection parameters / Receiver mapping (look from front):** one card,
-   row 1 column 1, width 128, height 384. Click **Send**, then **Save to
+   row 1 column 1, width 128, height 512. Click **Send**, then **Save to
    Receiver**. The forum guide stresses that **Save to Receiver** must be
    clicked on *both* the Screen Parameters and the mapping tab, because one
    does not save the other.
@@ -117,23 +128,29 @@ version works with this card]
    software gamma (`Settings.output.gamma`) at 1.0 unless pictures look
    washed out.
 7. Close LEDVision and check from our tool (section 6, step 2) that the card
-   reports **configured 128x384**.
+   reports **configured 128x512**.
 
 What matters for this project: every panel shows an undistorted 128×64
-picture, and the card's image is 128×384 with each port on its own 64-row
-band. The band order and each panel's rotation are fixed in software
-(section 7). A **mirrored** picture, stripes, repeated or missing rows, or
+picture, and the card's image is 128×512 with each port on its own 64-row
+band, J1 at the top. Which port each panel is on and each panel's rotation
+are fixed in software (section 6, step 3; section 7). A **mirrored** picture, stripes, repeated or missing rows, or
 half a panel dark cannot be fixed in software: go back to step 4.
 
 ## 5. Sender requirements
+
+The web UI checks all of this for you: **Settings → Setup** lists every
+check (Npcap, permissions, interface, link speed, the receiver card and its
+configured size, the panel wiring, the sound output) with what to do about
+each one that fails, and the Dashboard shows the ones that need attention.
 
 ### Windows
 
 * Install **Npcap** from <https://npcap.com>. In the installer:
   * **Untick "Restrict Npcap driver's access to Administrators only".** With
     it ticked, the server must run as administrator. The driver then says
-    *"Npcap is installed in 'Administrators only' mode: …"* and does not
-    open, rather than popping a UAC prompt. The development PC is in this
+    *"Npcap is installed in 'Administrators only' mode, and the server is
+    not running as administrator."* and does not open, rather than popping
+    a UAC prompt. The development PC is in this
     state today (`AdminOnly = 1`).
   * "WinPcap API-compatible mode" is optional for this project: the driver
     loads `System32\Npcap\wpcap.dll` itself. LEDVision may need it.
@@ -173,7 +190,8 @@ The tool drives the sign without the server. Run it from the repo:
 ```
 python -m trafficlight.tools.testpattern --list
 python -m trafficlight.tools.testpattern --iface ID --detect
-python -m trafficlight.tools.testpattern --iface ID --pattern panels --brightness 0.2 --raw
+python -m trafficlight.tools.testpattern --iface ID --pattern wiring --brightness 0.2
+python -m trafficlight.tools.testpattern --iface ID --pattern panels --brightness 0.2 --seen 3,8d,2,1d,5,4d
 ```
 
 (On Windows: `.venv\Scripts\python.exe -m trafficlight.tools.testpattern …`.
@@ -182,39 +200,69 @@ On the Pi: `~/.venvs/trafficlight/bin/python -m …`.)
 1. **`--list`** shows the Ethernet interfaces, their link state and speed,
    and the `--iface` value to use for each.
 2. **`--detect`** asks the card for its firmware and configured size, for
-   example `receiver 0: firmware 10.16, configured 128x384`.
+   example `receiver 0: firmware 10.16, configured 128x512`.
    * *No receiver card answered*: check the cable, the card's power (red
      LED) and that the link is gigabit. Card LED D1 flashing once a second
      means it sees a sender [src: spec].
-   * *Configured WxH* not 128x384: redo section 4.
+   * *Configured WxH* not 128x512: redo section 4. The server's output
+     status shows the same as a warning.
    * Note the firmware version. The driver sends the display packet twice
      on firmware 13 and later, as FPP does.
-3. **`--pattern panels --raw`** shows each panel in its own colour with its
-   number 1–6 (1 should end up at the top). Each panel also has a white
-   triangle in its top-left corner, a one-pixel white frame round its edge,
-   and red, green and blue swatches labelled R G B. `--raw` ignores any
-   saved settings. Stop with Ctrl+C: the sign is blanked on exit (`--keep`
+3. **Wiring.** In the web UI, open **Settings → Panel wiring** (a phone
+   works: stand in front of the sign) and press **Show connector numbers**.
+   Every panel then shows, white on black, the number of the card port it
+   is plugged into (1–8 for J1–J8, with a bar under the number) and an
+   arrow. This picture goes to the card as it is, past the panel order and
+   flips, so it shows the real wiring whatever the settings say. For each
+   panel, top to bottom, enter the number and which way the arrow points:
+   * arrow **up**: the panel hangs upright; arrow **down**: it hangs upside
+     down, and so does its number (the bar is then above it: a "9" with the
+     bar on top is a 6);
+   * a panel that stays dark: choose **Nothing (dark)**. It gets a free
+     port for now so the others can be saved; check its cable and power
+     and do this step again.
+
+   **Apply** works out `panel_order` (the port each panel is on, minus one)
+   and `panel_flip` (arrow down) and switches `rotate180` off. The page
+   refuses two panels with the same number. Example: from the top, 3 up,
+   8 down, 2 up, 1 down, 5 up, 4 down gives `panel_order [2,7,1,0,4,3]`,
+   `panel_flip [F,T,F,T,F,T]`.
+
+   Without the server, the tool does the same: `--pattern wiring` shows the
+   numbers, and `--seen 3,8d,2,1d,5,4d` (top to bottom; `d` = arrow down,
+   `-` = dark) applies the rule to whatever pattern is shown and prints the
+   resulting order and flips. Enter those in the web UI's wizard, or keep
+   passing `--seen`.
+
+   While the wiring picture is up, the web UI's preview shows each panel
+   with the number and arrow it *should* show under the current settings,
+   so after Apply the preview and the sign must agree.
+4. **Check: `--pattern panels`** (or **Show panels 1–6** after Apply) shows
+   each panel in its own colour with its number 1–6, which must now read
+   1 to 6 from the top, all upright. Each panel also has a white triangle
+   in its top-left corner, a one-pixel white frame round its edge, and red,
+   green and blue swatches labelled R G B. `--raw` ignores any saved
+   settings. Stop with Ctrl+C: the sign is blanked on exit (`--keep`
    leaves the pattern lit). Read the sign from the front:
 
 | What you see | Setting | Fix |
 | --- | --- | --- |
-| The numbers, top to bottom, read e.g. `3 1 2 4 5 6` | `panel_order` | Subtract one from each: `[2,0,1,3,4,5]`. Try it with `--order 2,0,1,3,4,5`. |
-| (with the right `--order`) the panel at position k (0 = top) shows its number upside down and the triangle bottom-right | `panel_flip[k] = true` | Try it with e.g. `--flip 0,1,0,1,0,1`. The predecessor's panels hang alternately rotated, so expect alternating flips. |
-| The whole sign upside down (numbers 6..1, all upside down) | `rotate180` | Or set the order reversed with every panel flipped; it is the same thing. |
+| Numbers out of order, or a panel upside down (triangle bottom-right) | `panel_order`, `panel_flip` | Redo step 3; an entry was wrong. |
+| The whole sign upside down | `rotate180` | Turns the whole picture over; the wiring wizard switches it off, so after step 3 it should stay off. |
 | Swatch R looks blue, G green, B red | `color_order` | Write down what R, G and B look like, in that order: `bgr`. Try it with `--color-order bgr`. Sources say the card usually wants `bgr`. |
 | A number reads **mirrored** (not rotated), stripes, repeated or shifted rows, part of the frame edge missing, half a panel dark | — | LEDVision module or cabinet setup (section 4). Not fixable here. |
 | The bottom row of the last band flickers or lights part-way | protocol option `sync_gap_ms` | Try `--options sync_gap_ms=3`, then 5 (section 8). |
 | Movement stutters at 60 fps | `Settings.fps` / options | Try `--fps 50`. One source saw stutter above about 50 Hz. Also try `--options sync_repeat=1` or `=2`. |
 | `--brightness` changes nothing | protocol option `brightness_mode` | `--options brightness_mode=software`. |
 
-   Work in that order: panel order first, then flips, then colours. Once
-   the sign reads 1..6 from the top, upright, with correct swatches, enter
-   the same values in the web UI's output settings, or run the tool without
-   `--raw` to check what is saved.
-4. **`--pattern gradient`** shows red, green, blue and white ramps. Uneven
+   Work in that order: wiring first, then colours. Once the sign reads
+   1..6 from the top, upright, with correct swatches, enter the colour
+   order in the web UI's output settings, or run the tool without `--raw`
+   to check what is saved.
+5. **`--pattern gradient`** shows red, green, blue and white ramps. Uneven
    steps or crushed darks are a matter for LEDVision's grey and gamma
    settings, or the software `gamma`.
-5. **`--pattern white --brightness 1`** for a few seconds is the
+6. **`--pattern white --brightness 1`** for a few seconds is the
    power-supply test. Measure the 5 V at the farthest panel.
 
 Other flags: `--seconds N`, `--fps N` (0 = as fast as possible; prints
@@ -222,16 +270,23 @@ packets/s), and `--options key=value,…` (section 8).
 
 ## 7. How the software maps the picture
 
-`trafficlight/output/mapping.py` turns the logical frame (row 0 = top of the
-sign as the audience sees it) into the card's 128×384 image:
+`trafficlight/output/mapping.py` turns the logical frame (128×384, row 0 =
+top of the sign as the audience sees it) into the card's 128×512 image
+(band *b* = rows 64·*b* .. 64·*b*+63 = port J*b+1*):
 
 1. `rotate180` turns the whole frame.
 2. Canvas panel *i* (64-row band *i* of the result, 0 = top) goes to band
-   `panel_order[i]` of the card's image. If `panel_flip[i]` is set, that
-   panel is rotated 180°.
+   `panel_order[i]` of the card's image, i.e. port J`panel_order[i]+1`
+   (six different values in 0..7). If `panel_flip[i]` is set, that panel is
+   rotated 180°. The two bands without a panel are sent black.
 3. `color_order` is the order of a pixel's bytes on the wire: `bgr` sends
    blue, green, red, the same convention as FPP's panel colour order.
 4. `gamma` (if not 1.0) is a software lookup table.
+
+The wiring test picture is drawn in the card's image and skips steps 1 and
+2 (colour order, gamma and brightness still apply). `output/wiring.py`
+holds the rule from what the panels show to `panel_order` / `panel_flip`;
+the web UI has the same rule in `web/src/pages/wiring.ts`.
 
 ## 8. Protocol options
 
@@ -343,10 +398,12 @@ reverse engineering:
 
 ### Throughput
 
-A frame is 386 packets (387 with a repeated display packet): 155 KB, about
-165 KB on the wire. At 60 fps that is about 23,200 packets/s and 79 Mb/s,
-well within gigabit but more than 100 Mb/s Ethernet can carry with
-headroom.
+A frame is 514 packets (515 with a repeated display packet): one row
+packet for each of the card's 512 rows, the 128 rows of the two unused
+ports included (the card expects its whole configured image), plus the
+brightness and display packets. That is 208 KB, about 220 KB on the wire.
+At 60 fps that is about 30,800 packets/s and 106 Mb/s: well within
+gigabit, more than 100 Mb/s Ethernet can carry.
 
 `send()` only copies the frame (about 0.1 ms) into a slot and returns. A
 sender thread maps the newest frame into a prebuilt packet buffer and sends
@@ -359,7 +416,8 @@ and counted.
   byte-identical to what `pcap_sendqueue_queue` builds in Npcap 1.88
   [tested].
 
-Measured without hardware (development PC):
+Measured without hardware (development PC), with the earlier 384-row card
+image; the 512-row image is a third more packets:
 
 | | Linux (WSL 2) | Windows 11, Python 3.13 |
 | --- | --- | --- |
@@ -378,8 +436,9 @@ Measured without hardware (development PC):
   each band.
 * Pixel byte order (`bgr` expected) and that brightness and colour
   temperature act as described.
-* That the detection reply carries firmware and a 128×384 size for this
-  card.
+* That LEDVision configures the 5A-75B for a 128×512 cabinet (eight
+  128×64 modules, one per port), and that the detection reply then
+  carries firmware and a 128×512 size.
 * That the Windows NIC sends the 0x0107 display frame unchanged. Capture on
   a second machine, or check that the sign updates at all.
 * Npcap transmit rate on Windows, and sendmmsg rate on the Pi.

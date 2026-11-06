@@ -19,7 +19,7 @@ from typing import Sequence
 import numpy as np
 
 from .base import NetInterface, OutputError
-from .rawsock_base import RawSocket
+from .rawsock_base import RawSocket, missing_interface_error, no_interface_error, open_failed_error
 
 REPLY_ETHERTYPE = 0x0805     # receiver card's answer to detection
 SIOCOUTQ = 0x5411            # == TIOCOUTQ: bytes still in the socket's send queue
@@ -57,11 +57,14 @@ def _libc_sendmmsg():
 _sendmmsg = _libc_sendmmsg()
 
 
-def permission_message() -> str:
+def permission_error() -> OutputError:
     exe = os.path.realpath(sys.executable)
-    return ("No permission to send raw Ethernet frames. Run the server as root, give it "
-            "CAP_NET_RAW (systemd: AmbientCapabilities=CAP_NET_RAW), or "
-            f"`sudo setcap cap_net_raw,cap_net_admin+eip {exe}`.")
+    return OutputError(
+        "No permission to send raw Ethernet frames (the server needs CAP_NET_RAW).",
+        "Run it as the systemd service that scripts/install_pi.sh sets up (its unit has "
+        "AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN), or give this Python the capability with "
+        f"`sudo setcap cap_net_raw,cap_net_admin+eip {exe}` and restart the server, or run it as root.",
+        check="output.access", title="No permission for raw Ethernet")
 
 
 class _Batch:
@@ -86,22 +89,22 @@ class LinuxRawSocket(RawSocket):
     header_room = 0
 
     def __init__(self, interface: str):
-        self.name = interface
+        self.name = self.label = interface
         if not interface:
-            raise OutputError("No network interface chosen for the Colorlight card")
+            raise no_interface_error()
         try:
             socket.if_nametoindex(interface)
         except OSError:
-            raise OutputError(f"No network interface named {interface!r}") from None
+            raise missing_interface_error(interface) from None
         try:
             self.sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(REPLY_ETHERTYPE))
         except PermissionError as e:
-            raise OutputError(permission_message()) from e
+            raise permission_error() from e
         try:
             self.sock.bind((interface, REPLY_ETHERTYPE))
         except OSError as e:
             self.sock.close()
-            raise OutputError(f"Cannot bind to {interface}: {e.strerror or e}") from e
+            raise open_failed_error(interface, str(e.strerror or e)) from e
         for opt in (SO_SNDBUFFORCE, socket.SO_SNDBUF):
             try:
                 self.sock.setsockopt(socket.SOL_SOCKET, opt, SEND_BUFFER)

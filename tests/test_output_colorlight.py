@@ -52,7 +52,7 @@ KUBOTA_REPLY = hexdump("""
 MACS = bytes.fromhex("112233445566222233445566")
 
 
-def reply(fw=(10, 16), size=(config.W, config.H), index=0) -> bytes:
+def reply(fw=(10, 16), size=(config.W, config.CARD_H), index=0) -> bytes:
     r = bytearray(KUBOTA_REPLY)
     r[15], r[16] = fw
     r[34:36] = size[0].to_bytes(2, "big")
@@ -123,26 +123,27 @@ def test_brightness_levels():
 
 
 def test_frame_encoder_packets():
-    enc = cl.FrameEncoder(config.W, config.H)
+    enc = cl.FrameEncoder(config.W, config.CARD_H)
     rng = np.random.default_rng(1)
-    img = rng.integers(0, 256, (config.H, config.W, 3), dtype=np.uint8)
+    img = rng.integers(0, 256, (config.CARD_H, config.W, 3), dtype=np.uint8)
     enc.pixels[...] = img
     enc.set_levels(128, (128, 128, 128), (128, 128, 128))
     pk = enc.packets()
-    assert len(pk) == 1 + config.H + 1
+    assert len(pk) == 1 + config.CARD_H + 1
     assert pk[0] == cl.brightness_packet((128, 128, 128))
-    for r in (0, 1, 255, 256, config.H - 1):
+    for r in (0, 1, 255, 256, config.H, config.CARD_H - 1):
         assert pk[1 + r] == cl.row_header(r, 0, config.W) + img[r].tobytes()
+    assert pk[config.CARD_H][13:15] == (config.CARD_H - 1).to_bytes(2, "big")
     assert pk[-1] == cl.display_packet(128)
-    assert enc.wire_bytes() == 77 + 24 + config.H * (21 + config.W * 3 + 24)
+    assert enc.wire_bytes() == 77 + 24 + config.CARD_H * (21 + config.W * 3 + 24)
 
 
 def test_frame_encoder_with_header_room_and_repeat():
-    enc = cl.FrameEncoder(config.W, config.H, room=16, sync_repeat=2)
+    enc = cl.FrameEncoder(config.W, config.CARD_H, room=16, sync_repeat=2)
     for off, n in [enc.brightness_span] + enc.row_spans + enc.sync_spans:
         assert off >= 16
     assert enc.row_spans[1][0] - enc.row_spans[0][0] == 16 + 21 + config.W * 3
-    assert len(enc.packets()) == 1 + config.H + 2
+    assert len(enc.packets()) == 1 + config.CARD_H + 2
 
 
 def test_options_parse():
@@ -156,7 +157,7 @@ def test_options_parse():
 
 def test_npcap_send_queue_records():
     from trafficlight.output.rawsock_npcap import NpcapRawSocket
-    enc = cl.FrameEncoder(config.W, config.H, room=16)
+    enc = cl.FrameEncoder(config.W, config.CARD_H, room=16)
     sock = object.__new__(NpcapRawSocket)            # prepare() needs no Npcap
     batch = sock.prepare(enc.rows, [enc.brightness_span] + enc.row_spans)
     raw = enc.rows[:batch.bytes].tobytes()
@@ -167,7 +168,7 @@ def test_npcap_send_queue_records():
         lens.append(caplen)
         pos += 16 + caplen
     assert pos == len(raw) == batch.bytes
-    assert lens == [77] + [21 + config.W * 3] * config.H
+    assert lens == [77] + [21 + config.W * 3] * config.CARD_H
 
 
 # ------------------------------------------------------------------ driver with a fake socket
@@ -244,14 +245,17 @@ def test_driver_sends_mapped_frame():
         assert wait_for(lambda: len(frames_of(sock)) >= 1)
         rows, sync = frames_of(sock)[0]
         want = Mapper(OutputSettings(**s)).apply(frame)
-        assert len(rows) == 1 + config.H and rows[0] == cl.brightness_packet((128, 128, 128))
-        for r in range(config.H):
+        assert want.shape == (config.CARD_H, config.W, 3)
+        assert len(rows) == 1 + config.CARD_H and rows[0] == cl.brightness_packet((128, 128, 128))
+        for r in range(config.CARD_H):
             assert rows[1 + r] == cl.row_header(r, 0, config.W) + want[r].tobytes()
+        for r in range(config.H, config.CARD_H):            # connectors without a panel get black
+            assert not any(rows[1 + r][cl.ROW_HEADER_LEN:])
         assert sync == [cl.display_packet(128)]
         assert wait_for(lambda: drv.status()["receiver_found"])
         st = drv.status()
         assert st["ok"] and st["receiver"]["firmware"] == "10.16" and st["frames"] >= 1
-        assert st["packets_per_frame"] == config.H + 2
+        assert st["packets_per_frame"] == config.CARD_H + 2
     finally:
         drv.close()
     assert sock.closed
@@ -327,7 +331,7 @@ def test_white_balance_and_no_brightness_packet():
         drv.send(np.zeros((config.H, config.W, 3), np.uint8))
         assert wait_for(lambda: len(frames_of(sock)) >= 1)
         rows, sync = frames_of(sock)[0]
-        assert len(rows) == config.H and rows[0][12] == cl.TYPE_ROW
+        assert len(rows) == config.CARD_H and rows[0][12] == cl.TYPE_ROW
         assert sync == [cl.display_packet(255, (255, 128, 64))]
         assert sock.sent == [] and drv.status()["ok"]
     finally:
@@ -344,8 +348,14 @@ def test_status_reports_missing_receiver_and_wrong_size():
         assert all(p[12] == cl.TYPE_DETECT for p in sock.sent)
         sock.inbox.append(reply(size=(128, 64)))
         assert wait_for(lambda: drv.status()["receiver_found"])
-        st = drv.status()
-        assert st["ok"] and any("128x64" in w for w in st["warnings"])
+        st = drv.status()                                        # a card not set up: the sign cannot work
+        assert not st["ok"] and "128x64" in st["error"] and f"{config.W}x{config.CARD_H}" in st["error"]
+        assert [p["id"] for p in st["problems"]] == ["output.card_size"] and "LEDVision" in st["problems"][0]["fix"]
+        sock.inbox.append(reply(size=(config.W, config.H)))      # the old six-port layout is wrong now
+        assert wait_for(lambda: drv.status()["receiver"]["height"] == config.H)
+        assert f"must be {config.W}x{config.CARD_H}" in drv.status()["error"]
+        sock.answer = reply()                                    # set up in LEDVision meanwhile: the driver asks again
+        assert wait_for(lambda: drv.status()["ok"], timeout=8.0) and drv.status()["problems"] == []
     finally:
         drv.close()
 
@@ -363,12 +373,14 @@ def test_link_down_is_an_error_and_frames_are_held_back():
         drv.close()
 
 
-def test_slow_link_warns():
+def test_slow_link_is_an_error():
     sock = FakeSocket(answer=reply(), link=(True, 100))
     drv = make_driver(sock)
     drv.open()
     try:
-        assert any("gigabit" in w for w in drv.status()["warnings"])
+        st = drv.status()
+        assert not st["ok"] and "100 Mb/s" in st["error"] and "gigabit" in st["problems"][0]["fix"]
+        assert st["problems"][0]["id"] == "output.link"
     finally:
         drv.close()
 
@@ -387,7 +399,9 @@ def test_open_error_is_reported():
 
 def test_bad_mapping_settings_fall_back_and_report():
     sock = FakeSocket(answer=reply())
-    drv = make_driver(sock, panel_order=[0, 0, 1, 2, 3, 4])
+    s = OutputSettings(driver="colorlight", interface="fake0")
+    s.panel_order = [0, 0, 1, 2, 3, 4]                # assignment is not validated (the bring-up tool does it)
+    drv = cl.ColorlightDriver(s, options=cl.ColorlightOptions(sync_gap_ms=0.0), opener=lambda iface: sock)
     assert "panel_order" in drv.status()["error"]
     drv.update_settings(OutputSettings(driver="colorlight", interface="fake0", panel_order=[1, 0, 2, 3, 4, 5]))
     assert drv.status()["error"] is None
@@ -403,10 +417,64 @@ def test_update_settings_remaps_without_reopen():
         drv.send(frame)
         assert wait_for(lambda: len(frames_of(sock)) >= 1)
         drv.update_settings(OutputSettings(driver="colorlight", interface="fake0", rotate180=True, brightness=0.5))
-        assert wait_for(lambda: frames_of(sock)[-1][0][-1][-3:] == bytes([255, 0, 0]))
+        # rotated: the frame's top-left pixel is the last pixel of the sixth band (row H - 1)
+        assert wait_for(lambda: frames_of(sock)[-1][0][config.H][-3:] == bytes([255, 0, 0]))
         assert not sock.closed
     finally:
         drv.close()
+
+
+def test_send_card_skips_the_mapping_but_not_colour_order():
+    sock = FakeSocket(answer=reply())
+    s = dict(panel_order=[7, 5, 3, 1, 0, 2], panel_flip=[True, False] * 3, rotate180=True, color_order="bgr",
+             brightness=0.5)
+    drv = make_driver(sock, **s)
+    drv.open()
+    try:
+        card = np.random.default_rng(4).integers(0, 256, (config.CARD_H, config.W, 3), dtype=np.uint8)
+        drv.send_card(card)
+        assert wait_for(lambda: len(frames_of(sock)) >= 1)
+        rows, sync = frames_of(sock)[0]
+        assert len(rows) == 1 + config.CARD_H and sync == [cl.display_packet(128)]
+        for r in range(config.CARD_H):
+            assert rows[1 + r] == cl.row_header(r, 0, config.W) + card[r, :, ::-1].tobytes()
+        # back to ordinary frames: the mapping applies again
+        frame = np.random.default_rng(5).integers(0, 256, (config.H, config.W, 3), dtype=np.uint8)
+        drv.send(frame)
+        want = Mapper(OutputSettings(**s)).apply(frame)
+        assert wait_for(lambda: len(frames_of(sock)) >= 2)
+        assert frames_of(sock)[1][0][1:] == [cl.row_header(r, 0, config.W) + want[r].tobytes()
+                                             for r in range(config.CARD_H)]
+        with pytest.raises(ValueError):
+            drv.send_card(card[:config.H])
+        with pytest.raises(ValueError):
+            drv.send(card)
+    finally:
+        drv.close()
+
+
+def test_mixed_frames_and_card_images_drop_cleanly():
+    sock = FakeSocket(answer=reply(), delay=0.01)
+    drv = make_driver(sock)
+    drv.open()
+    try:
+        for i in range(30):
+            if i % 3 == 0:
+                drv.send_card(np.full((config.CARD_H, config.W, 3), i, np.uint8))
+            else:
+                drv.send(np.full((config.H, config.W, 3), i, np.uint8))
+            time.sleep(0.001)
+        drv.send_card(np.full((config.CARD_H, config.W, 3), 200, np.uint8))
+        last = lambda: frames_of(sock)[-1][0]
+        assert wait_for(lambda: frames_of(sock) and last()[config.CARD_H][21] == 200 and last()[1][21] == 200)
+        assert drv.status()["dropped"] > 0
+    finally:
+        drv.close()
+
+
+def test_null_driver_ignores_card_images():
+    from trafficlight.output.base import NullDriver
+    NullDriver().send_card(np.zeros((config.CARD_H, config.W, 3), np.uint8))
 
 
 def test_detect_helper_stops_at_first_silent_index():

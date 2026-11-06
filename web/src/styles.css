@@ -86,8 +86,6 @@ main { flex: 1; width: 100%; max-width: 1100px; margin: 0 auto; padding: 16px; }
 
 /* feedback */
 .conn-banner { background: var(--bad); color: #200; font-weight: 600; text-align: center; padding: 8px; position: sticky; top: 52px; z-index: 19; }
-.warning { border: 1px solid var(--bad); background: rgba(255, 97, 89, .1); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; }
-.warning strong { color: var(--bad); }
 .toasts { position: fixed; right: 12px; left: 12px; bottom: 12px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; z-index: 100; pointer-events: none; }
 .toast { pointer-events: auto; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; max-width: 480px; box-shadow: 0 6px 24px #000a; }
 .toast.error { border-color: var(--bad); }
@@ -156,15 +154,49 @@ input[type=url] { font: inherit; color: var(--text); background: var(--surface2)
 .target-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
 .target-grid button:last-child { grid-column: span 2; }
 
-/* settings: panel stack */
-.panel-stack { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
-.panel-row { display: flex; gap: 14px; align-items: center; }
-.panel-box { width: 128px; height: 64px; flex: none; border: 3px solid; border-radius: 4px; background: #000; position: relative; display: flex; align-items: center; justify-content: center; }
-.panel-num { font-size: 1.6rem; font-weight: 700; }
-.panel-arrow { position: absolute; right: 6px; top: 2px; color: var(--muted); font-size: .8rem; }
-.panel-box.flipped .panel-arrow { transform: rotate(180deg); top: auto; bottom: 2px; color: var(--accent); }
-.panel-ctl { display: grid; gap: 4px; min-width: 0; }
-.panel-ctl select { min-height: 36px; }
+/* settings: panel wiring wizard. The sign is drawn as three lights of two panels, top to bottom. */
+.wiring-steps { margin: 0 0 12px; padding-left: 1.3em; display: grid; gap: 4px; }
+.wiring-buttons { margin: 12px 0; }
+.wiring-sign { display: flex; flex-direction: column; gap: 8px; max-width: 560px; }
+.wiring-light { border: 3px solid; border-radius: 14px; padding: 6px; display: grid; gap: 6px; }
+.wiring-row { display: flex; gap: 12px; align-items: center; border-radius: 8px; padding: 2px; }
+.wiring-row.bad { outline: 2px solid var(--bad); }
+.wiring-panel { width: 128px; height: 64px; flex: none; background: #000; border: 1px solid var(--border); border-radius: 3px; display: flex; align-items: center; justify-content: space-around; color: #fff; font-weight: 800; }
+.wiring-panel.down { transform: rotate(180deg); }
+.wiring-panel.dark { color: var(--muted); font-weight: 400; }
+.wiring-num { font-size: 2.2rem; line-height: 1; text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: 4px; }
+.wiring-arrow { font-size: 2.4rem; line-height: 1; }
+.wiring-none { font-size: .85rem; }
+.wiring-ctl { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.wiring-name { font-weight: 600; }
+.wiring-ctl select { min-height: 44px; min-width: 7.5em; }
+.wiring-problem { color: var(--bad); margin: 8px 0; }
+.wiring-done { border: 1px solid var(--ok); border-radius: 12px; padding: 10px 14px; margin: 8px 0 12px; }
+.wiring-done p { margin: 0 0 10px; }
+
+/* setup checks (Settings "Setup", Dashboard "needs attention") */
+.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.check { display: flex; gap: 10px; align-items: flex-start; padding: 7px 4px; border-radius: 8px; }
+.check-mark { flex: none; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: .8rem; font-weight: 800; margin-top: 1px; }
+.check.ok .check-mark { color: var(--ok); border: 1px solid var(--ok); }
+.check.info .check-mark { color: var(--muted); border: 1px solid var(--muted); font-style: italic; font-family: Georgia, serif; }
+.check.warning .check-mark { background: var(--accent); color: var(--accent-ink); }
+.check.error .check-mark { background: var(--bad); color: #1a0000; }
+.check.error, .check.warning { background: var(--surface2); }
+.check-body { min-width: 0; display: grid; gap: 2px; }
+.check-title { font-weight: 600; }
+.check.ok .check-title { font-weight: 400; }
+.check-detail { color: var(--muted); font-size: .85rem; overflow-wrap: anywhere; }
+.check.ok .check-detail { font-size: .8rem; }
+.check-fix { font-size: .9rem; overflow-wrap: anywhere; }
+.check-fix-label { font-weight: 600; }
+.check.error .check-fix-label { color: var(--bad); }
+.check.warning .check-fix-label { color: var(--accent); }
+.check-fix code, .check-detail code { color: var(--text); background: var(--bg); padding: 0 .3em; border-radius: 4px; }
+.attention { border-color: var(--bad); }
+.attention-head { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
+.attention-head h2 { margin: 0; }
+.nav-alert { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); margin-left: 6px; vertical-align: super; }
 
 /* phone */
 @media (max-width: 640px) {
@@ -187,5 +219,9 @@ input[type=url] { font: inherit; color: var(--text); background: var(--surface2)
   .handle { padding: 0 2px; }
   .media-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
   .card { padding: 12px; }
-  .panel-box { width: 112px; height: 56px; }
+  .wiring-panel { width: 88px; height: 44px; }
+  .wiring-num { font-size: 1.6rem; }
+  .wiring-arrow { font-size: 1.7rem; }
+  .wiring-row { gap: 8px; }
+  .wiring-light { padding: 4px; }
 }

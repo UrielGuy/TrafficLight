@@ -135,6 +135,24 @@ def test_devices_interfaces_test_pattern(rig):
     assert rig.post("/api/output/test", json={"pattern": "plaid"}).status_code == 400
     rig.post("/api/output/test", json={"pattern": "off"})
     wait_for(lambda: rig.get("/api/state").json()["now"]["source"] == "idle")
+    assert rig.post("/api/output/test", json={"pattern": "wiring"}).json() == {"ok": True}
+    wait_for(lambda: rig.get("/api/state").json()["now"]["set_name"] == "wiring")
+    rig.post("/api/output/test", json={"pattern": "off"})
+    wait_for(lambda: rig.get("/api/state").json()["now"]["source"] == "idle")
+
+
+def test_settings_refuse_impossible_wiring(rig):
+    ok = rig.patch("/api/settings", json={"output": {"panel_order": [7, 2, 0, 5, 1, 4], "panel_flip": [True] * 6}})
+    assert ok.status_code == 200 and ok.json()["output"]["panel_order"] == [7, 2, 0, 5, 1, 4]
+    for body, words in [({"panel_order": [0, 2, 1, 3, 2, 5]}, "panels 2 and 5 are on the same connector J3"),
+                        ({"panel_order": [0, 1, 2, 3, 4, config.PORTS]}, f"connectors J1..J{config.PORTS}"),
+                        ({"panel_order": [0, 1, 2]}, "needs 6 entries"),
+                        ({"panel_flip": [True]}, "needs 6 entries")]:
+        r = rig.patch("/api/settings", json={"output": body})
+        assert r.status_code == 422, body
+        detail = r.json()["detail"]
+        assert words in detail and detail.startswith("output.panel_") and "Value error" not in detail
+    assert rig.get("/api/settings").json()["output"]["panel_order"] == [7, 2, 0, 5, 1, 4]
 
 
 def test_media_routes(rig):

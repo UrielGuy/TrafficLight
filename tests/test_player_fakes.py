@@ -142,7 +142,9 @@ class FakeDriver(OutputDriver):
         self.settings = settings
         self.fail = fail
         self.frames = 0
+        self.cards = 0
         self.last: Optional[np.ndarray] = None
+        self.last_card: Optional[np.ndarray] = None
         self.brightness: Optional[float] = None
         self.opened = self.closed = False
         FakeDriver.instances.append(self)
@@ -156,6 +158,12 @@ class FakeDriver(OutputDriver):
         assert frame.shape == (config.H, config.W, 3) and frame.dtype == np.uint8
         frame[:] = 0          # a driver that works in place must not spoil the preview
         self.frames += 1
+
+    def send_card(self, image):
+        assert image.shape == (config.CARD_H, config.W, 3) and image.dtype == np.uint8
+        self.last_card = image.copy()
+        image[:] = 0
+        self.cards += 1
 
     def set_brightness(self, value):
         self.brightness = value

@@ -1,6 +1,7 @@
 """Audio engine contract: plays the sounds the player asks for on a chosen output device."""
 from __future__ import annotations
 
+import sys
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
@@ -49,8 +50,41 @@ class AudioEngine:
         return {"ok": True, "error": None, "device": None, "device_name": None, "volume": 1.0, "voices": 0}
 
 
+CHOOSE_DEVICE = "Settings → Audio → Output device"
+
+
+def device_problem(code: str, error: str) -> dict[str, Any]:
+    """The setup check (trafficlight/checks.py) for an engine error. code: "device_missing" (the chosen device
+    is not there), "no_device" (the computer has none), "lost" (it stopped while playing), "open_failed"."""
+    title, fix = {
+        "device_missing": ("The chosen sound device is not there",
+                           f"Plug it in (the server keeps trying), or choose another one in {CHOOSE_DEVICE}."),
+        "no_device": ("No sound output device",
+                      "Connect speakers or a USB sound card, or enable the computer's audio output."),
+        "lost": ("The sound device stopped", "Plug it back in: the server reopens it by itself."),
+    }.get(code, ("The sound device cannot be opened",
+                 f"Close other programs that may hold it exclusively, or choose another device in {CHOOSE_DEVICE}."))
+    return {"id": "audio.device", "level": "error", "title": title, "detail": error, "fix": fix}
+
+
+def backend_problem(reason: Optional[str]) -> dict[str, Any]:
+    """The check for running without the sound library (NullAudio)."""
+    if sys.platform.startswith("linux"):
+        fix = ("Install PortAudio with `sudo apt install libportaudio2` (scripts/install_pi.sh does it), "
+               "then restart the server.")
+    else:
+        fix = ("Reinstall the Python packages (`pip install -r requirements.txt` in the venv): on Windows the "
+               "sounddevice package brings PortAudio. Then restart the server.")
+    detail = "The sound library (sounddevice / PortAudio) could not be loaded, so the sign runs silent"
+    return {"id": "audio.backend", "level": "error", "title": "No sound output on this machine",
+            "detail": f"{detail}: {reason}." if reason else f"{detail}.", "fix": fix}
+
+
 class NullAudio(AudioEngine):
-    """No sound (tests, or a machine without a sound card)."""
+    """No sound (tests, or a machine without a sound card). `reason`: why the real engine did not load."""
+
+    def __init__(self, reason: Optional[str] = None):
+        self.reason = reason
 
 
 def create_audio_engine() -> AudioEngine:
@@ -58,7 +92,7 @@ def create_audio_engine() -> AudioEngine:
     try:
         from .engine import SoundDeviceEngine
         return SoundDeviceEngine()
-    except Exception:
+    except Exception as e:
         import logging
         logging.getLogger(__name__).exception("audio unavailable, running silent")
-        return NullAudio()
+        return NullAudio(str(e) or type(e).__name__)

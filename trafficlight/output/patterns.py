@@ -5,6 +5,12 @@ drawn large and upright, a white triangle in its top-left corner, a one-pixel
 frame round its edge (missing edge rows or columns show a wrong scan setting)
 and three swatches labelled R G B (colour order). How these appear on the
 sign says which setting to change; see docs/HARDWARE.md.
+
+"wiring" (`make_card`) is drawn in the card's image instead and sent past the
+panel mapping: each band shows its connector number and an arrow to the top
+of the band, so each panel shows where it is plugged in and which way up it
+hangs (output/wiring.py turns that into settings). `wiring_preview` is what
+the sign shows of it when the settings match the wiring.
 """
 from __future__ import annotations
 
@@ -14,8 +20,11 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .. import config
+from ..model import OutputSettings
 
 NAMES = ("panels", "white", "red", "green", "blue", "gradient")
+CARD_NAMES = ("wiring",)
+SUPERSAMPLE = 4        # shapes are drawn this much larger and scaled down: anti-aliased edges
 
 # Panel colours, top to bottom: far apart in hue, dimmed so a whole sign of
 # them stays well within the supply.
@@ -27,6 +36,24 @@ def make(name: str) -> np.ndarray | None:
     if name not in NAMES:
         return None
     return _cached(name).copy()
+
+
+def make_card(name: str) -> np.ndarray | None:
+    """A (CARD_H, W, 3) uint8 picture in the card's image, or None for an unknown name."""
+    if name not in CARD_NAMES:
+        return None
+    return _wiring().copy()
+
+
+@lru_cache(maxsize=64)
+def wiring_preview(order: tuple[int, ...], flip: tuple[bool, ...], rotate180: bool) -> np.ndarray:
+    """The wiring picture as the sign shows it (H, W, 3) if panel_order / panel_flip / rotate180 match
+    how it is wired: each panel with the number and arrow it should show. Read-only."""
+    from .mapping import Mapper
+    m = Mapper(OutputSettings(panel_order=list(order), panel_flip=list(flip), rotate180=rotate180))
+    f = m.inverse(_wiring())
+    f.flags.writeable = False
+    return f
 
 
 @lru_cache(maxsize=None)
@@ -77,3 +104,43 @@ def _panels() -> np.ndarray:
             l, t, r, b = d.textbbox((0, 0), letter, font=small)
             d.text((x + sw / 2 - (l + r) / 2, y0 + sw + 2 - t), letter, font=small, fill=(255, 255, 255))
     return np.asarray(img, dtype=np.uint8).copy()
+
+
+@lru_cache(maxsize=None)
+def _wiring() -> np.ndarray:
+    """Band b: the number b+1, underlined (so 6 and 9 differ upside down), and an arrow to the band's
+    top, white on black: readable at a distance and the same in every colour order."""
+    S, W, PH = SUPERSAMPLE, config.PANEL_W, config.PANEL_H
+    band = Image.new("L", (W * S, PH * S))
+    d = ImageDraw.Draw(band)
+    # Arrow in the right half: head down to 40 % of the band, shaft to the bottom.
+    ax0, ax1, top, bottom = W * S * 9 // 16, W * S - 4 * S, 2 * S, PH * S - 3 * S
+    mid = (ax0 + ax1) / 2
+    neck = top + (bottom - top) * 0.42
+    shaft = (ax1 - ax0) * 0.18
+    d.polygon([(mid, top), (ax1, neck), (mid + shaft, neck), (mid + shaft, bottom), (mid - shaft, bottom),
+               (mid - shaft, neck), (ax0, neck)], fill=255)
+    font = _number_font(int(PH * S * 0.80))
+    bar = max(S, PH * S // 16)
+    img = np.zeros((config.CARD_H, W, 3), np.uint8)
+    for b in range(config.PORTS):
+        canvas = band.copy()
+        d = ImageDraw.Draw(canvas)
+        label = str(b + 1)
+        l, t, r, bt = d.textbbox((0, 0), label, font=font)
+        cx = W * S * 0.27
+        y = (PH * S - (bt - t) - 2 * bar) / 2          # number, a gap of one bar, the bar: centred
+        d.text((cx - (l + r) / 2, y - t), label, font=font, fill=255)
+        uy = y + (bt - t) + bar
+        d.rectangle([cx - (r - l) / 2, uy, cx + (r - l) / 2, uy + bar - 1], fill=255)
+        small = canvas.resize((W, PH), Image.Resampling.BOX)
+        img[b * PH:(b + 1) * PH] = np.asarray(small, np.uint8)[:, :, None]
+    img.flags.writeable = False
+    return img
+
+
+def _number_font(size: int):
+    try:
+        return ImageFont.truetype(str(config.FONTS_DIR / "DejaVuSans-Bold.ttf"), size)
+    except OSError:
+        return ImageFont.load_default(size=size)

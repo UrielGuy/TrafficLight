@@ -23,8 +23,9 @@ def can_open_raw() -> bool:
 @linux
 def test_linux_unknown_interface():
     from trafficlight.output.rawsock_linux import LinuxRawSocket
-    with pytest.raises(OutputError, match="No network interface named"):
+    with pytest.raises(OutputError, match="'no-such-if0' is not there") as e:
         LinuxRawSocket("no-such-if0")
+    assert e.value.check == "output.interface" and "Settings" in e.value.fix
 
 
 @linux
@@ -87,5 +88,5 @@ def test_windows_unknown_adapter():
     except OutputError as e:
         assert "Npcap is not installed" in str(e)
         return
-    with pytest.raises(OutputError, match="not found"):
+    with pytest.raises(OutputError, match="is not there"):
         n.NpcapRawSocket("\\Device\\NPF_{00000000-0000-0000-0000-000000000000}")
