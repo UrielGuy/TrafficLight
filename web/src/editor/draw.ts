@@ -1,6 +1,6 @@
 // Canvas drawing of the time ruler and the beat grid behind the tracks. Both draw
 // only the visible window, so the cost does not depend on the set's length.
-import { BEATS_PER_BAR, formatRulerTime, gridBeats, rulerStep, secondsPerBeat } from './beats';
+import { BEATS_PER_BAR, formatRulerTime, gridBeats, rulerStep, secondsPerBeat, type GridLines } from './beats';
 import type { LoopRange } from './session';
 
 export interface View {
@@ -122,14 +122,26 @@ export function drawRuler(cv: HTMLCanvasElement, v: View, loop: LoopRange, playi
   }
 }
 
-export function drawGrid(cv: HTMLCanvasElement, v: View, loop: LoopRange) {
+/** Thinnest spacing at which grid lines are still drawn. */
+const MIN_LINE_PX = 5;
+
+/** The snap grid behind the tracks: what is drawn is what an edge is quantized to. */
+export function drawGrid(cv: HTMLCanvasElement, v: View, loop: LoopRange, grid: GridLines | null) {
   const ctx = prepare(cv);
   if (!ctx) return;
   const { width: w, height: h, pps, t0 } = v;
-  const every = gridBeats(pps, v.bpm, 10);
-  for (const [px, isBar] of beatLines(v, every)) {
-    ctx.fillStyle = isBar && every < BEATS_PER_BAR * 4 ? 'rgba(255,255,255,.085)' : 'rgba(255,255,255,.035)';
-    ctx.fillRect(Math.round(px), 0, 1, h);
+  if (grid) {
+    // A fixed step can be finer than the zoom shows: draw the strong lines only, or none.
+    const fine = grid.step * pps >= MIN_LINE_PX;
+    const every = fine ? 1 : grid.major;
+    if (grid.step * every * pps >= MIN_LINE_PX) {
+      const first = Math.ceil(Math.max(0, t0 - grid.offset) / grid.step / every) * every;
+      const last = (t0 + w / pps - grid.offset) / grid.step;
+      for (let n = first; n <= last; n += every) {
+        ctx.fillStyle = fine && n % grid.major === 0 ? 'rgba(255,255,255,.085)' : 'rgba(255,255,255,.035)';
+        ctx.fillRect(Math.round((grid.offset + n * grid.step - t0) * pps), 0, 1, h);
+      }
+    }
   }
   if (loop.on && loop.to !== null) {
     ctx.fillStyle = 'rgba(255,176,0,.25)';

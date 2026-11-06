@@ -11,8 +11,8 @@
 //  * Trimming stops at the neighbouring clip and at a minimum length.
 //  * Snapping (when on): an edge within a few pixels of another clip's edge, the
 //    playhead, the set's start/end or a loop edge is pulled onto it; otherwise the
-//    dragged edge is quantized to the beat grid (beats, bars or 4 bars, whichever
-//    is at least 10 px apart at the current zoom).
+//    dragged edge is quantized to the chosen grid: beats or plain time, at a fixed
+//    step or at whichever step is at least 10 px apart at the current zoom.
 import type { Clip, SetData, Target, Track } from '../api/types';
 import { nearestGrid } from './beats';
 
@@ -172,8 +172,8 @@ export function split(clip: Clip, t: number, withOffset: boolean): [Clip, Clip] 
 export interface SnapContext {
   /** Sorted snap points in seconds (clip edges, playhead, set bounds, loop edges). */
   points: number[];
-  /** Beat grid, or null for none. */
-  grid: { bpm: number; offset: number; stepBeats: number } | null;
+  /** Grid to quantize to (beats or time, in seconds), or null for none. */
+  grid: { offset: number; step: number } | null;
   /** Max distance in seconds. */
   threshold: number;
 }
@@ -210,7 +210,7 @@ function magnet(t: number, ctx: SnapContext): number | null {
 export function snapTarget(t: number, ctx: SnapContext): Snap | null {
   const p = magnet(t, ctx);
   if (p !== null) return { t: p, magnet: true };
-  if (ctx.grid && ctx.grid.stepBeats > 0) return { t: nearestGrid(t, ctx.grid.bpm, ctx.grid.offset, ctx.grid.stepBeats), magnet: false };
+  if (ctx.grid && ctx.grid.step > 0) return { t: nearestGrid(t, ctx.grid.offset, ctx.grid.step), magnet: false };
   return null;
 }
 
@@ -225,7 +225,7 @@ export function snapBlock(start: number, duration: number, ctx: SnapContext): { 
   const da = a === null ? Infinity : Math.abs(a - start);
   const db = b === null ? Infinity : Math.abs(b - (start + duration));
   if (da !== Infinity || db !== Infinity) return da <= db ? { start: a!, at: a } : { start: b! - duration, at: b };
-  if (ctx.grid && ctx.grid.stepBeats > 0) return { start: nearestGrid(start, ctx.grid.bpm, ctx.grid.offset, ctx.grid.stepBeats), at: null };
+  if (ctx.grid && ctx.grid.step > 0) return { start: nearestGrid(start, ctx.grid.offset, ctx.grid.step), at: null };
   return { start, at: null };
 }
 

@@ -7,9 +7,8 @@ export const secondsPerBeat = (bpm: number) => 60 / Math.max(1e-6, bpm);
 /** Fractional beats since beat 0 of the set's grid (negative before `offset`). */
 export const beatAt = (t: number, bpm: number, offset: number) => ((t - offset) * bpm) / 60;
 
-/** Time of the grid line nearest `t`, the grid being every `stepBeats` beats from `offset`. */
-export function nearestGrid(t: number, bpm: number, offset: number, stepBeats: number): number {
-  const step = secondsPerBeat(bpm) * stepBeats;
+/** Time of the grid line nearest `t`, the lines being every `step` seconds from `offset`. */
+export function nearestGrid(t: number, offset: number, step: number): number {
   return offset + Math.round((t - offset) / step) * step;
 }
 
@@ -56,6 +55,43 @@ export function gridBeats(pps: number, bpm: number, minPx = 10): number {
   const beatPx = secondsPerBeat(bpm) * pps;
   for (const b of [1, BEATS_PER_BAR, BEATS_PER_BAR * 4, BEATS_PER_BAR * 16]) if (beatPx * b >= minPx) return b;
   return 0;
+}
+
+/** What clips snap to: the set's beat grid or plain time. `step` is in beats or seconds; 0 follows the zoom. */
+export interface SnapGrid {
+  unit: 'beats' | 'time';
+  step: number;
+}
+export const BEAT_STEPS = [0.25, 0.5, 1, BEATS_PER_BAR, BEATS_PER_BAR * 4];
+export const TIME_STEPS = [0.1, 0.25, 0.5, 1, 5, 10, 30, 60];
+
+/** Grid lines in seconds: line n is at offset + n * step; every `major`-th line is a strong one. */
+export interface GridLines {
+  offset: number;
+  step: number;
+  major: number;
+}
+
+/** The lines of a snap grid at this zoom and tempo, or null when "follow the zoom" finds them too dense. */
+export function gridLines(g: SnapGrid, pps: number, bpm: number, beatOffset: number, minPx = 10): GridLines | null {
+  if (g.unit === 'beats') {
+    const beats = g.step > 0 ? g.step : gridBeats(pps, bpm, minPx);
+    if (beats <= 0) return null;
+    // Strong lines are bars, or every fourth line once a line is a bar or more.
+    const major = beats < BEATS_PER_BAR ? Math.round(BEATS_PER_BAR / beats) : 4;
+    return { offset: beatOffset, step: secondsPerBeat(bpm) * beats, major };
+  }
+  const step = g.step > 0 ? g.step : rulerStep(pps, minPx);
+  const major = step < 1 ? 1 / step : step < 10 ? 10 / step : 60 / step;
+  return { offset: 0, step, major: Math.max(1, Math.round(major)) };
+}
+
+/** "½ beat", "1 bar", "0.25 s", "1 min": the name of a fixed step. */
+export function stepLabel(g: SnapGrid): string {
+  if (g.step <= 0) return 'Auto';
+  if (g.unit === 'time') return g.step >= 60 ? `${g.step / 60} min` : `${g.step} s`;
+  if (g.step >= BEATS_PER_BAR) return g.step === BEATS_PER_BAR ? '1 bar' : `${g.step / BEATS_PER_BAR} bars`;
+  return g.step === 0.25 ? '¼ beat' : g.step === 0.5 ? '½ beat' : `${g.step} beat${g.step === 1 ? '' : 's'}`;
 }
 
 /**

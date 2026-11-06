@@ -4,12 +4,12 @@ import { useEffect, useRef } from 'react';
 import { Toggle } from '../components/ui';
 import { useStore } from '../state/store';
 import { deleteSelection, splitAtPlayhead } from './actions';
-import { barBeat, formatSeconds } from './beats';
+import { barBeat, BEAT_STEPS, formatSeconds, stepLabel, TIME_STEPS, type SnapGrid } from './beats';
 import { docStore, draft, useDoc } from './doc';
 import { Icon } from './icons';
 import { clock, loopStore, sessionStore, type EditorSession } from './session';
 import { spanOf } from './model';
-import { setSnap, timelineApi, viewStore } from './view';
+import { setSnap, setSnapStep, setSnapUnit, timelineApi, viewStore } from './view';
 
 /** Time and bar/beat of the playhead, updated every animation frame without React. */
 function TimeDisplay() {
@@ -45,7 +45,7 @@ function TimeDisplay() {
 export default function Transport({ session, collapsed, onCollapse }: { session: EditorSession; collapsed: boolean; onCollapse: () => void }) {
   const info = useStore(sessionStore);
   const loop = useStore(loopStore);
-  const { snap } = useStore(viewStore);
+  const { snap, grid } = useStore(viewStore);
   const hasSel = useDoc((s) => s.selection.length > 0);
 
   const loopSelection = () => {
@@ -83,7 +83,17 @@ export default function Transport({ session, collapsed, onCollapse }: { session:
       </div>
       <div className="tp-group tp-view">
         <button className={`icon-btn ${snap ? 'on' : ''}`} aria-pressed={snap} onClick={() => setSnap(!snap)}
-          title="Snap to beats, clip edges and the playhead (N). Hold Shift while dragging to suspend it." aria-label="Snapping" data-testid="snap"><Icon name="magnet" /></button>
+          title="Snap to the grid, clip edges and the playhead (N). Hold Shift while dragging to suspend it." aria-label="Snapping" data-testid="snap"><Icon name="magnet" /></button>
+        <select className={`tp-grid ${snap ? '' : 'off'}`} value={grid.unit} onChange={(e) => setSnapUnit(e.target.value as SnapGrid['unit'])}
+          title="What clips snap to: the set's beats, or plain time" aria-label="Snap to beats or time" data-testid="snap-unit">
+          <option value="beats">Beats</option>
+          <option value="time">Time</option>
+        </select>
+        <select className={`tp-grid ${snap ? '' : 'off'}`} value={String(grid.step)} onChange={(e) => setSnapStep(Number(e.target.value))}
+          title="Distance between snap lines. Auto follows the zoom." aria-label="Snap step" data-testid="snap-step">
+          <option value="0">Auto</option>
+          {(grid.unit === 'beats' ? BEAT_STEPS : TIME_STEPS).map((s) => <option key={s} value={String(s)}>{stepLabel({ unit: grid.unit, step: s })}</option>)}
+        </select>
         <button className="icon-btn" onClick={() => timelineApi.current?.zoom(1 / 1.5)} title="Zoom out (-)" aria-label="Zoom out"><Icon name="zoomOut" /></button>
         <button className="icon-btn" onClick={() => timelineApi.current?.zoom(1.5)} title="Zoom in (+)" aria-label="Zoom in"><Icon name="zoomIn" /></button>
         <button className="icon-btn" onClick={() => timelineApi.current?.fit()} title="Fit the set (0)" aria-label="Zoom to fit"><Icon name="fit" /></button>

@@ -7,7 +7,7 @@ import { useCatalog, useMedia, useSettings } from '../state/app';
 import { confirmDialog } from '../state/confirm';
 import { useStore } from '../state/store';
 import { accepts, dropItem } from './actions';
-import { gridBeats } from './beats';
+import { gridLines } from './beats';
 import { itemDuration, makeClip, offsetTypes, trackColor, typeMap, type PaletteItem, type TypeMap } from './clipinfo';
 import { ClipView } from './ClipView';
 import { docStore, draft, edit, select, setInsert, toggleSelect, useDoc } from './doc';
@@ -40,7 +40,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 export default function Timeline({ session, narrow, onInspect }: { session: EditorSession; narrow: boolean; onInspect: () => void }) {
   const HEAD_W = narrow ? 120 : 190;
   const ROW_H = narrow ? 50 : 56;
-  const { pps, snap } = useStore(viewStore);
+  const { pps, snap, grid } = useStore(viewStore);
   const tracks = useDoc((s) => s.history.present.tracks);
   const bpm = useDoc((s) => s.history.present.bpm);
   const offset = useDoc((s) => s.history.present.beat_offset);
@@ -69,8 +69,8 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
   const contentW = Math.max(viewW - HEAD_W, (end + 8) * pps);
 
   // Latest values for event handlers and the animation loop (they are created once).
-  const L = useRef({ pps, snap, tracks, bpm, offset, duration, loop, playing, HEAD_W, ROW_H, types, end, viewW });
-  L.current = { pps, snap, tracks, bpm, offset, duration, loop, playing, HEAD_W, ROW_H, types, end, viewW };
+  const L = useRef({ pps, snap, grid, tracks, bpm, offset, duration, loop, playing, HEAD_W, ROW_H, types, end, viewW });
+  L.current = { pps, snap, grid, tracks, bpm, offset, duration, loop, playing, HEAD_W, ROW_H, types, end, viewW };
 
   // ---------------------------------------------------------------- geometry
   const xToT = useCallback((cx: number) => {
@@ -91,9 +91,9 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
     const t0 = sc.scrollLeft / v.pps;
     const base = { pps: v.pps, t0, bpm: v.bpm, offset: v.offset, duration: v.duration };
     if (rulerCv.current) drawRuler(rulerCv.current, { ...base, width: rulerCv.current.clientWidth, height: rulerCv.current.clientHeight }, v.loop, v.playing);
-    if (gridCv.current) drawGrid(gridCv.current, { ...base, width: gridCv.current.clientWidth, height: gridCv.current.clientHeight }, v.loop);
+    if (gridCv.current) drawGrid(gridCv.current, { ...base, width: gridCv.current.clientWidth, height: gridCv.current.clientHeight }, v.loop, gridLines(v.grid, v.pps, v.bpm, v.offset));
   }, []);
-  useEffect(redraw, [pps, bpm, offset, duration, loop, viewW, playing, tracks.length, redraw]);
+  useEffect(redraw, [pps, grid, bpm, offset, duration, loop, viewW, playing, tracks.length, redraw]);
 
   useEffect(() => {
     const sc = scroller.current!;
@@ -244,7 +244,7 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
     const lp = loopStore.get();
     const extra = [0, s.duration, clock.now()];
     if (lp.to !== null) extra.push(lp.from, lp.to);
-    return { points: snapPoints(s, exclude, extra), grid: { bpm: s.bpm, offset: s.beat_offset, stepBeats: gridBeats(v.pps, s.bpm, 10) }, threshold: 8 / v.pps };
+    return { points: snapPoints(s, exclude, extra), grid: gridLines(v.grid, v.pps, s.bpm, s.beat_offset), threshold: 8 / v.pps };
   }, []);
 
   const markMoving = (ids: string[], on: boolean) => {

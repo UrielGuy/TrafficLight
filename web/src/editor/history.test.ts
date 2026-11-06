@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { commit, createHistory, redo, seal, undo } from './history';
-import { barBeat, formatSeconds, gridBeats, nearestGrid, rulerStep, tapTempo } from './beats';
+import { barBeat, formatSeconds, gridBeats, gridLines, nearestGrid, rulerStep, stepLabel, tapTempo } from './beats';
+import { DEFAULT_STEPS, parseGridPref } from './view';
 
 describe('history', () => {
   it('undoes and redoes', () => {
@@ -38,9 +39,39 @@ describe('history', () => {
 
 describe('beats', () => {
   it('finds grid lines', () => {
-    expect(nearestGrid(1.2, 120, 0, 1)).toBe(1);
-    expect(nearestGrid(1.3, 120, 0.1, 1)).toBeCloseTo(1.1);
-    expect(nearestGrid(2.9, 120, 0, 4)).toBe(2);
+    expect(nearestGrid(1.2, 0, 0.5)).toBe(1);
+    expect(nearestGrid(1.3, 0.1, 0.5)).toBeCloseTo(1.1);
+    expect(nearestGrid(2.9, 0, 2)).toBe(2);
+  });
+  it('turns a snap grid into lines', () => {
+    // beats: from the set's beat offset, strong lines on bars
+    expect(gridLines({ unit: 'beats', step: 1 }, 100, 120, 0.1)).toEqual({ offset: 0.1, step: 0.5, major: 4 });
+    expect(gridLines({ unit: 'beats', step: 0.5 }, 100, 120, 0)).toEqual({ offset: 0, step: 0.25, major: 8 });
+    expect(gridLines({ unit: 'beats', step: 4 }, 100, 120, 0)).toEqual({ offset: 0, step: 2, major: 4 });
+    // time: from zero whatever the beat offset and tempo, strong lines on whole seconds
+    expect(gridLines({ unit: 'time', step: 0.25 }, 100, 93, 0.1)).toEqual({ offset: 0, step: 0.25, major: 4 });
+    expect(gridLines({ unit: 'time', step: 5 }, 100, 120, 0)).toEqual({ offset: 0, step: 5, major: 2 });
+    // step 0 follows the zoom; a fixed step does not
+    expect(gridLines({ unit: 'beats', step: 0 }, 10, 120, 0)!.step).toBe(2);
+    expect(gridLines({ unit: 'beats', step: 0 }, 0.01, 120, 0)).toBeNull();
+    expect(gridLines({ unit: 'time', step: 0 }, 100, 120, 0)!.step).toBe(0.1);
+    expect(gridLines({ unit: 'time', step: 0 }, 2, 120, 0)!.step).toBe(5);
+    expect(gridLines({ unit: 'beats', step: 1 }, 0.01, 120, 0)!.step).toBe(0.5);
+  });
+  it('starts time snapping at a quarter second and beats on auto', () => {
+    expect(DEFAULT_STEPS).toEqual({ beats: 0, time: 0.25 });
+    expect(parseGridPref(null)).toEqual({ unit: 'beats', steps: { beats: 0, time: 0.25 } });
+    expect(parseGridPref('{"unit":"time","steps":{"beats":4,"time":0}}')).toEqual({ unit: 'time', steps: { beats: 4, time: 0 } });
+    expect(parseGridPref('{"unit":"weeks","steps":{"beats":3,"time":7}}')).toEqual({ unit: 'beats', steps: { beats: 0, time: 0.25 } });
+    expect(parseGridPref('not json')).toEqual({ unit: 'beats', steps: { beats: 0, time: 0.25 } });
+  });
+  it('names snap steps', () => {
+    expect(stepLabel({ unit: 'beats', step: 0 })).toBe('Auto');
+    expect(stepLabel({ unit: 'beats', step: 0.5 })).toBe('½ beat');
+    expect(stepLabel({ unit: 'beats', step: 4 })).toBe('1 bar');
+    expect(stepLabel({ unit: 'beats', step: 16 })).toBe('4 bars');
+    expect(stepLabel({ unit: 'time', step: 0.25 })).toBe('0.25 s');
+    expect(stepLabel({ unit: 'time', step: 60 })).toBe('1 min');
   });
   it('names bars and beats', () => {
     expect(barBeat(0, 120, 0)).toEqual({ bar: 1, beat: 1 });

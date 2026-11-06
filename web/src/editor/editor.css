@@ -47,6 +47,8 @@ main:has(> .editor) { max-width: none; padding: 0; display: flex; flex-direction
 .transport-bar { display: flex; align-items: center; gap: 12px; padding: 3px 8px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; overflow-x: auto; scrollbar-width: none; }
 .tp-group { display: flex; align-items: center; gap: 2px; flex: none; }
 .tp-view { margin-left: auto; }
+.tp-grid { min-height: 30px; padding: 0 4px; font-size: .8rem; max-width: 84px; }
+.tp-grid.off { opacity: .55; }
 .tp-play { background: var(--accent) !important; color: var(--accent-ink) !important; border-color: var(--accent) !important; min-width: 44px; border-radius: 18px; }
 .tp-time { display: flex; flex-direction: column; line-height: 1.15; padding: 0 8px; font-variant-numeric: tabular-nums; min-width: 92px; }
 .tp-sec { font-size: 1.05rem; font-weight: 600; }

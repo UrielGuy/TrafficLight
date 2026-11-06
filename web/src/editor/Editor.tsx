@@ -10,7 +10,7 @@ import { useStore } from '../state/store';
 import {
   copySelection, cutSelection, deleteSelection, duplicateSelection, nudge, paste, save, selectAll, splitAtPlayhead,
 } from './actions';
-import { BEATS_PER_BAR, secondsPerBeat } from './beats';
+import { BEATS_PER_BAR, gridLines, secondsPerBeat } from './beats';
 import {
   clearBackup, docStore, draft, isDirty, loadDoc, readBackup, redo, select, setInsert, undo, useDoc, writeBackup, type Backup,
 } from './doc';
@@ -274,8 +274,11 @@ function EditorView({ session }: { session: EditorSession }) {
       if (e.defaultPrevented || isTyping(e.target) || document.querySelector('.backdrop')) return;
       const d = docStore.get();
       if (!d) return;
-      const spb = secondsPerBeat(d.history.present.bpm);
-      const step = e.altKey ? 0.05 : e.shiftKey ? spb * BEATS_PER_BAR : spb;
+      // Arrows move by one line of the snap grid (Shift: one strong line), a beat when it is too dense to show.
+      const { bpm, beat_offset } = d.history.present;
+      const view = viewStore.get();
+      const g = gridLines(view.grid, view.pps, bpm, beat_offset) ?? { step: secondsPerBeat(bpm), major: BEATS_PER_BAR };
+      const step = e.altKey ? 0.05 : e.shiftKey ? g.step * g.major : g.step;
       let handled = true;
       if (mod) {
         if (k === 'z' && !e.shiftKey) undo();

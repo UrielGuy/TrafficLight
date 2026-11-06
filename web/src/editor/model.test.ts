@@ -154,7 +154,7 @@ describe('split', () => {
 });
 
 describe('snapping', () => {
-  const ctx = { points: [0, 3.3, 10], grid: { bpm: 120, offset: 0, stepBeats: 1 }, threshold: 0.2 };
+  const ctx = { points: [0, 3.3, 10], grid: { offset: 0, step: 0.5 }, threshold: 0.2 };
   it('pulls to a nearby point', () => {
     expect(snapTarget(3.25, ctx)).toEqual({ t: 3.3, magnet: true });
   });
@@ -172,7 +172,7 @@ describe('snapping', () => {
   });
   it('quantizes the start of a block when no point is near', () => {
     expect(snapBlock(5.2, 1, ctx)).toEqual({ start: 5, at: null });
-    expect(snapBlock(5.2, 1, { ...ctx, grid: { bpm: 120, offset: 0.1, stepBeats: 4 } })).toEqual({ start: 6.1, at: null });
+    expect(snapBlock(5.2, 1, { ...ctx, grid: { offset: 0.1, step: 2 } })).toEqual({ start: 6.1, at: null });
     expect(snapBlock(5.2, 1, { ...ctx, grid: null })).toEqual({ start: 5.2, at: null });
   });
   it('collects edges except the moving clips', () => {
