@@ -373,12 +373,24 @@ def test_link_back_up_resends_the_picture():
         drv.close()
 
 
-def test_firmware_13_sends_display_twice():
-    sock = FakeSocket(answer=reply(fw=(13, 5)))
+def test_firmware_13_sends_display_once_unless_asked():
+    sock = FakeSocket(answer=reply(fw=(13, 39)))
     drv = make_driver(sock)
     drv.open()
     try:
         assert wait_for(lambda: drv.status()["receiver_found"])
+        drv.send(np.zeros((config.H, config.W, 3), np.uint8))
+        assert wait_for(lambda: frames_of(sock) and len(frames_of(sock)[-1][1]) == 1)
+        assert frames_of(sock)[-1][1][0][12] == cl.TYPE_DISPLAY
+        assert drv.status()["packets_per_frame"] == config.CARD_H + 2
+    finally:
+        drv.close()
+    sock = FakeSocket(answer=reply(fw=(13, 39)))
+    s = OutputSettings(driver="colorlight", interface="fake0")
+    drv = cl.ColorlightDriver(s, options=cl.ColorlightOptions(sync_gap_ms=0.0, sync_repeat=2),
+                              opener=lambda iface: sock)
+    drv.open()
+    try:
         drv.send(np.zeros((config.H, config.W, 3), np.uint8))
         assert wait_for(lambda: frames_of(sock) and len(frames_of(sock)[-1][1]) == 2)
     finally:
@@ -392,7 +404,8 @@ def test_old_firmware_uses_software_brightness():
     try:
         assert wait_for(lambda: drv.status()["receiver_found"])
         drv.send(np.full((config.H, config.W, 3), 200, np.uint8))
-        assert wait_for(lambda: frames_of(sock) and frames_of(sock)[-1][1] == [cl.display_packet(255)])
+        assert wait_for(lambda: frames_of(sock) and len(frames_of(sock)[-1][1]) == 1)
+        assert frames_of(sock)[-1][1][0][12] == cl.TYPE_DISPLAY
         assert frames_of(sock)[-1][0][1][21] == 100
         assert drv.status()["software_brightness"]
     finally:

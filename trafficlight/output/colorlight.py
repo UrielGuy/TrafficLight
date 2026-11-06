@@ -18,7 +18,7 @@ and byte 13 is already payload.
 A frame is: brightness packet, one row packet per row of the card's image
 (CARD_H rows: every connector's band, also those without a panel; 128
 pixels: one packet each), a pause until the rows are on the wire plus a gap, then the
-display packet (twice for firmware 13 and later, as FPP does).
+display packet (once: it swaps the card's two picture buffers, see below).
 
 send() (and send_card()) only copies the picture into a slot; a sender
 thread maps it, builds the packets in place and sends the newest one,
@@ -209,7 +209,9 @@ class ColorlightOptions:
     """Protocol knobs the sources disagree on. Not part of Settings: set them with the
     TRAFFICLIGHT_COLORLIGHT environment variable, e.g. "sync_gap_ms=5,sync_repeat=2"."""
     sync_gap_ms: float = 1.0          # pause after the rows have left before the display packet
-    sync_repeat: int = 0              # display packets per frame; 0 = 2 on firmware >= 13 else 1 (FPP)
+    # Display packets per frame. FPP sends 2 on firmware >= 13, but each one swaps the card's picture
+    # buffers (tested on 13.39): two could cancel out and leave the previous picture showing.
+    sync_repeat: int = 1
     brightness_packet: Literal["linear", "ledvision", "off"] = "linear"
     brightness_mode: Literal["auto", "card", "software"] = "auto"
     white_balance: tuple[float, float, float] = (1.0, 1.0, 1.0)
@@ -455,11 +457,6 @@ class ColorlightDriver(OutputDriver):
             return self._receiver is not None and self._receiver.firmware_major < 4
         return m == "software"
 
-    def _sync_repeat(self) -> int:
-        if self.options.sync_repeat > 0:
-            return self.options.sync_repeat
-        return 2 if self._receiver is not None and self._receiver.firmware_major >= 13 else 1
-
     def _apply_levels(self, enc: FrameEncoder) -> np.ndarray | None:
         """Write brightness into the packets; returns the software LUT (or None)."""
         wb = [min(max(c, 0.0), 1.0) for c in self.options.white_balance]
@@ -476,7 +473,7 @@ class ColorlightDriver(OutputDriver):
         return gamma_lut(1.0, b) if soft else None
 
     def _build(self, sock: RawSocket):
-        enc = FrameEncoder(config.W, config.CARD_H, sock.header_room, self._sync_repeat())
+        enc = FrameEncoder(config.W, config.CARD_H, sock.header_room, max(1, self.options.sync_repeat))
         spans = ([enc.brightness_span] if self.options.brightness_packet != "off" else []) + enc.row_spans
         self._enc = enc
         self._rows_batch = sock.prepare(enc.rows, spans)
@@ -526,8 +523,6 @@ class ColorlightDriver(OutputDriver):
                 self._detect_tries += 1
                 settled = rec is not None and (rec.width, rec.height) == (config.W, config.CARD_H)
                 next_detect = now + (CHECK_SECONDS if settled else 0.5 if self._detect_tries < 3 else 3.0)
-            if self._enc.sync_repeat != self._sync_repeat():
-                self._build(sock)
             if not woke or self._stop.is_set():
                 continue
             self._wake.clear()

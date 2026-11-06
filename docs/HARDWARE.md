@@ -252,7 +252,7 @@ On the Pi: `~/.venvs/trafficlight/bin/python -m …`.)
 | Swatch R looks blue, G green, B red | `color_order` | Write down what R, G and B look like, in that order: `bgr`. Try it with `--color-order bgr`. Sources say the card usually wants `bgr`. |
 | A number reads **mirrored** (not rotated), stripes, repeated or shifted rows, part of the frame edge missing, half a panel dark | — | LEDVision module or cabinet setup (section 4). Not fixable here. |
 | The bottom row of the last band flickers or lights part-way | protocol option `sync_gap_ms` | Try `--options sync_gap_ms=3`, then 5 (section 8). |
-| Movement stutters at 60 fps | `Settings.fps` / options | Try `--fps 50`. One source saw stutter above about 50 Hz. Also try `--options sync_repeat=1` or `=2`. |
+| Movement stutters at 60 fps | `Settings.fps` / options | Try `--fps 50`. One source saw stutter above about 50 Hz. Also try `--options sync_repeat=2` (FPP's choice on firmware ≥ 13). |
 | `--brightness` changes nothing | protocol option `brightness_mode` | `--options brightness_mode=software`. |
 | Still pictures are steady, moving ones shimmer slightly | card refresh (LEDVision) | Each new frame swaps the card's picture buffers and disturbs its refresh (section 9, "Buffer swap"). Raise the refresh rate in LEDVision. |
 
@@ -303,7 +303,7 @@ or with the tool's `--options`.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `sync_gap_ms` | 1.0 | Pause between the last row leaving the port and the display packet. FPP uses 0.5 ms, Kubota 1 ms, PanelPlayer at least 5 ms. |
-| `sync_repeat` | 0 (auto) | Display packets per frame. Auto = 2 on firmware ≥ 13, else 1 (FPP). |
+| `sync_repeat` | 1 | Display packets per frame. FPP sends 2 on firmware ≥ 13, but each one swaps the card's picture buffers: with 2 the card sometimes showed the previous frame (13.39, section 9). |
 | `brightness_packet` | `linear` | The 0x0A packet: `linear` (FPP: same value as the display packet), `ledvision` (LEDVision's non-linear levels, after Kubota), `off` (PanelPlayer: not needed). |
 | `brightness_mode` | `auto` | `card`: brightness is sent to the card. `software`: pixels are scaled and the card is told 100 %. `auto` = card, or software when the card reports firmware 2.x / 3.x (FPP: brightness "doesn't seem to work" there). |
 | `white_balance` | `1/1/1` | R/G/B multipliers in the display packet (colour temperature): e.g. `1/0.86/0.56` ≈ 4500 K (Kubota's table). |
@@ -385,7 +385,9 @@ reverse engineering:
 * **Duplicates:** for firmware ≥ 13, LEDVision sends the display and
   brightness packets (and rows) twice. FPP repeats the display packet and
   the brightness packet, but not the rows ("seems unnecessary"). The driver
-  repeats only the display packet on firmware ≥ 13 (`sync_repeat`).
+  sends the display packet once (`sync_repeat` = 1): on 13.39 each one swaps
+  the picture buffers, and two per frame made moving pictures now and then
+  jump back to the previous frame. [tested on the card, 2026-11-06]
 * **Buffer swap:** the card is double-buffered. Rows go into a hidden
   buffer; each display packet swaps it with the shown one (display packets
   alone flip between the last two pictures). On firmware 13.39 / 5A-75B the
