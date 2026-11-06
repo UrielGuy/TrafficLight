@@ -1,11 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import SignPreview from '../components/SignPreview';
 import { Empty, Field, Slider, Toggle, Warning } from '../components/ui';
 import { patchSettings, setsRes, settingsRes, signFeed, useAppState, useSets, useSettings } from '../state/app';
 import { formatTime, useDebouncedValue } from '../state/hooks';
 import { attempt } from '../state/toast';
-import type { NowSource } from '../api/types';
+import type { NowSource, State } from '../api/types';
 
 const SOURCE: Record<NowSource, string> = {
   schedule: 'Schedule',
@@ -14,6 +14,41 @@ const SOURCE: Record<NowSource, string> = {
   test: 'Test pattern',
   idle: 'Idle',
 };
+
+/**
+ * Position in the playing set. The server reports it a few times a second; between reports the
+ * bar runs on by the browser's clock, drawn every animation frame without re-rendering the page.
+ */
+function NowProgress({ now }: { now: State['now'] | undefined }) {
+  const bar = useRef<HTMLDivElement>(null);
+  const text = useRef<HTMLDivElement>(null);
+  const at = useRef({ now, t: 0, duration: 0, running: false, stamp: 0 });
+  // Only a new report restarts the clock: the page also re-renders for unrelated reasons.
+  if (at.current.now !== now || at.current.stamp === 0) {
+    at.current = { now, t: now?.t ?? 0, duration: now?.duration ?? 0, running: !!now && !now.paused && now.duration > 0, stamp: performance.now() };
+  }
+  const known = !!now;
+  useEffect(() => {
+    let raf = 0;
+    let shown = '';
+    const tick = () => {
+      const a = at.current;
+      const t = a.running ? Math.min(a.duration, a.t + (performance.now() - a.stamp) / 1000) : a.t;
+      if (bar.current) bar.current.style.transform = `scaleX(${a.duration > 0 ? Math.min(1, t / a.duration) : 0})`;
+      const label = known ? `${formatTime(t)} / ${formatTime(a.duration)}` : `${formatTime(null)} / ${formatTime(null)}`;
+      if (text.current && label !== shown) text.current.textContent = shown = label;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [known]);
+  return (
+    <>
+      <div className="progress smooth"><div ref={bar} /></div>
+      <div className="small muted" ref={text} data-testid="now-time" />
+    </>
+  );
+}
 
 export default function Dashboard() {
   const state = useAppState();
@@ -30,7 +65,6 @@ export default function Dashboard() {
   const [minutes, setMinutes] = useDebouncedValue(settings?.schedule.random_minutes ?? 6, (v) => void patchSettings({ schedule: { random_minutes: v } }), 600);
 
   const now = state?.now;
-  const progress = now && now.duration > 0 ? Math.min(1, now.t / now.duration) : 0;
 
   return (
     <div className="page">
@@ -51,8 +85,7 @@ export default function Dashboard() {
         <div className="card now">
           <div className="small muted">{now ? SOURCE[now.source] : 'Waiting for the controller…'}{now?.paused ? ' · paused' : ''}</div>
           <div className="now-name">{now?.set_name ?? (now?.source === 'test' ? 'Test pattern' : '—')}</div>
-          <div className="progress"><div style={{ width: `${progress * 100}%` }} /></div>
-          <div className="small muted">{formatTime(now?.t)} / {formatTime(now?.duration)}</div>
+          <NowProgress now={now} />
           <div className="row transport">
             <button className="primary" onClick={() => attempt(now?.paused ? api.play : api.pause)}>{now?.paused ? 'Play' : 'Pause'}</button>
             <button onClick={() => attempt(api.next)}>Next</button>

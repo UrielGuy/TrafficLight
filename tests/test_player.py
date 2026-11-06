@@ -39,6 +39,16 @@ def test_empty_set_dark_and_ring():
     assert tuple(f[0, 0]) == (0, 0, 0)
 
 
+def test_a_light_clip_shows_over_a_whole_sign_clip_wherever_the_tracks_are():
+    whole = ("all", [solid("#0000ff")])
+    light = ("face1", [Clip(type="off", start=0, duration=4)])
+    for tracks in ([whole, light], [light, whole]):
+        f, _ = Player(env(off_style="dark"), make_set(*tracks), background_init=False).render(0.5)
+        # the whole-sign clip carries on in the other two lights; the middle one is switched off
+        assert px(f, 0) == px(f, 2) == (0, 0, 255) and px(f, 1) == (0, 0, 0)
+        assert tuple(f[F + C, 2]) == (0, 0, 0)          # right up to the rim of the middle light
+
+
 def test_face_clip_masked_and_placed():
     s = make_set(("face1", [solid("#00ff00")]))
     f, _ = Player(env(off_style="dark"), s, background_init=False).render(1.0)

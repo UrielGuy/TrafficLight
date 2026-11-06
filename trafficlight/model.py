@@ -45,7 +45,8 @@ class Track(BaseModel):
 
 class Set(BaseModel):
     """A timeline. tracks[0] is the top row in the editor and the top layer on the sign:
-    visual tracks are composited from the last to the first."""
+    visual tracks are composited from the last to the first, whole-sign ("all") tracks
+    before the lights' tracks so that a clip on one light shows over a whole-sign clip."""
     id: str = Field(default_factory=new_id)
     name: str = "Untitled"
     bpm: float = 120.0                 # tempo of the beat grid and the beat animations (10..400)

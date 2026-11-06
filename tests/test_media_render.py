@@ -312,7 +312,8 @@ def test_playing_clips_switch_to_a_re_made_crop(tmp_path, monkeypatch):
         while lib.get(vid.id).status == "processing" or lib.get(pic.id).status == "processing":
             t += 1 / 60
             out = v.render(ctx(t))
-            assert out is not None and not _is_red(out)
+            # (the new video may be published between the status check above and this frame)
+            assert out is not None and (not _is_red(out) or lib.get(vid.id).version == 2)
             time.sleep(0.002)
         assert lib.get(vid.id).version == 2 and lib.get(pic.id).version == 2
         end = time.monotonic() + 3

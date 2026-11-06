@@ -98,6 +98,8 @@ main { flex: 1; width: 100%; max-width: 1100px; margin: 0 auto; padding: 16px; }
 .progress { height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; margin: 8px 0 4px; }
 .progress > div { height: 100%; background: var(--accent); transition: width .2s; }
 .progress > div.bad { background: var(--bad); }
+/* Driven every frame by script: a width transition would lag behind and stutter. */
+.progress.smooth > div { width: 100%; transform-origin: left; transform: scaleX(0); transition: none; will-change: transform; }
 
 /* sign preview */
 .sign-housing { background: #050607; border: 1px solid var(--border); border-radius: 14px; padding: 8px; width: 100%; }

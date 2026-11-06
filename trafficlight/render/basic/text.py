@@ -23,7 +23,7 @@ def _params(p: dict[str, Any]) -> tuple[str, str, int]:
 class Text(ClipRenderer):
     type = "text"
     label = "Text"
-    category = "text"
+    category = "basic"
     targets = ("face",)
     default_duration = 4.0
     description = ("Text fitted in the light, as large as it fits: line breaks are chosen automatically "

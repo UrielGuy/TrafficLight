@@ -22,7 +22,13 @@ def ctx(t=0.0, face=0, all_=False, bpm=120.0, seed=1):
 def test_registered_with_catalog_entries():
     entries = {c["type"]: c for c in render.catalog()}
     assert entries["light"]["category"] == "basic" and entries["light"]["targets"] == ["face", "all"]
-    assert entries["text"]["category"] == "text" and entries["text"]["targets"] == ["face"]
+    assert entries["text"]["category"] == "basic" and entries["text"]["targets"] == ["face"]
+    assert entries["off"]["category"] == "basic" and entries["off"]["targets"] == ["face", "all"] and entries["off"]["params"] == []
+    basic = ("light", "off", "text", "clock")
+    assert [t for t in entries if t in basic] == list(basic)     # their order in the library
+    for c in (ctx(), ctx(all_=True)):
+        black = get_renderer("off")({}, RenderEnv(settings=model.Settings())).render(c)
+        assert black.shape == (c.height, c.width, 3) and black.dtype == np.uint8 and not black.any()
     assert entries["figure"]["category"] == "figure" and entries["figure"]["targets"] == ["face"]
     text_params = {p["key"]: p for p in entries["text"]["params"]}
     assert text_params["font"]["kind"] == "select"

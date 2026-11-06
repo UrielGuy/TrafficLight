@@ -133,6 +133,14 @@ def idle_frame(settings: Settings) -> np.ndarray:
 
 
 # ---------------------------------------------------------------- timeline helpers
+def paint_order(tracks: list[Track]) -> list[Track]:
+    """Tracks from the bottom layer to the top. A whole-sign clip is the backdrop: a clip on one
+    light always shows over it, wherever the tracks sit in the list. Within each kind the first
+    track in the list is the top layer."""
+    back = list(reversed(tracks))
+    return [t for t in back if t.target == "all"] + [t for t in back if t.target != "all"]
+
+
 def clip_at(track: Track, t: float) -> Optional[Clip]:
     """The clip covering t (start <= t < start + duration). Clips should not overlap;
     if they do, the one that started last wins."""
@@ -350,7 +358,7 @@ class Player:
             if c.id not in self._insts:
                 self._instance(c, now=False)
 
-        for track in reversed(self.set.tracks):
+        for track in paint_order(self.set.tracks):
             if track.muted or (track.target == "audio" and not audio):
                 continue
             clip = clip_at(track, t)
