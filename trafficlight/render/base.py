@@ -134,6 +134,7 @@ class ClipRenderer:
     label: ClassVar[str] = ""                    # name in the UI
     category: ClassVar[str] = "basic"            # palette group: "basic" | "text" | "figure" | "beat" | "media"
     targets: ClassVar[tuple[str, ...]] = ("face", "all")   # where it may go: "face", "all", "audio"
+    masked: ClassVar[bool] = True     # False: always fills its whole box, whatever Clip.mask says (`off`)
     default_duration: ClassVar[float] = 4.0      # seconds, when dropped on the timeline
     params: ClassVar[list[ParamSpec]] = []
     description: ClassVar[str] = ""
@@ -179,6 +180,7 @@ class ClipRenderer:
             "type": cls.type, "label": cls.label, "category": cls.category,
             "targets": list(cls.targets), "default_duration": cls.default_duration,
             "description": cls.description, "params": [s.to_json() for s in cls.params],
+            "masked": cls.masked,
         }
 
 

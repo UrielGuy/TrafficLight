@@ -1,5 +1,6 @@
 """Beat animations and the clocks: registration, shapes, determinism, timing properties, speed."""
 import datetime
+import hashlib
 import math
 import time
 
@@ -322,3 +323,174 @@ def test_fills_whole_sign_complete_before_the_end():
     assert (f[disc(config.W, config.H)] == 0).all()
     g = make("fx:fillx").render(ctx(0, face=None, w=config.W, h=config.H, t=1.2, dur=4.0, color=(255, 255, 255)))
     assert (g[disc(config.W, config.H)] > 0).any()
+
+
+# ---------------------------------------------------------------- no regression for opaque colours
+GOLDEN_VARIANTS = ({}, {"color": "#3070ff", "ink": "#ffe000", "bg": "#101040", "hue_color": 30})
+# Recorded before the transparent colours were added; identical on Windows and Linux. The clocks
+# are not hashed: sin/cos differ in the last bit between platforms, so their pixel sums are compared.
+GOLDEN = {
+    "fx:quarters": "0e67d6b3e7db9b4b",
+    "fx:pulse": "198ec167461144d7",
+    "fx:wave": "5ed19b7af535fdd0",
+    "fx:ecg": "8f4e1f325f69fe99",
+    "fx:ecgsweep": "b0ac92ee4b642cb6",
+    "fx:heart": "9bc7605e2af7aebb",
+    "fx:ripples": "54c45df83278534f",
+    "fx:eq": "63473145da782a64",
+    "fx:chase": "155e9ee42a003ab9",
+    "fx:ball": "c3f7848dfae77e85",
+    "fx:sparkle": "43790bed4607b0b2",
+    "fx:fillv": "1cb04c7e2f718959",
+    "fx:fillx": "7e92d24fd20fbfb5"
+}
+GOLDEN_SUMS = {
+    "fx:clock": [2762032, 2762032, 2762032, 2714594, 7154672, 7154672, 6894750, 8007560],
+    "clock": [2718662, 2718662, 2718662, 2718662, 7108232, 7108232, 7108232, 7108232],
+}
+
+
+@pytest.mark.parametrize("typ", sorted(GOLDEN))
+def test_opaque_pictures_are_unchanged(typ):
+    h = hashlib.sha1()
+    for p in GOLDEN_VARIANTS:
+        for beat in (0.0, 0.37, 1.0, 2.6):
+            h.update(draw(typ, beat, p).tobytes())
+    if typ in ALL_TARGET:
+        h.update(make(typ).render(ctx(1.3, face=None, w=config.W, h=config.H)).tobytes())
+    assert h.hexdigest()[:16] == GOLDEN[typ]
+
+
+@pytest.mark.parametrize("typ", sorted(GOLDEN_SUMS))
+def test_opaque_clocks_are_unchanged(typ):
+    sums = [int(draw(typ, b, p).astype(np.int64).sum()) for p in GOLDEN_VARIANTS for b in (0.0, 0.37, 1.0, 2.6)]
+    assert np.allclose(sums, GOLDEN_SUMS[typ], rtol=2e-3)
+
+
+# ---------------------------------------------------------------- transparent colours
+# The param that is the background, and the others that give a visible, background-independent picture.
+SEE_THROUGH = {
+    "fx:quarters": ("color", {}),
+    "fx:pulse": ("bg", {"color": "#3070ff"}), "fx:heart": ("bg", {"color": "#3070ff"}),
+    "fx:eq": ("bg", {"color": "#ff00ff"}),
+    "fx:sparkle": ("color", {"multicolor": False, "ink": "#ffe000"}),
+}
+for _t in ("fx:wave", "fx:clock", "fx:ecg", "fx:ecgsweep", "fx:ripples", "fx:chase", "fx:ball", "fx:fillv",
+           "fx:fillx", "clock"):
+    SEE_THROUGH[_t] = ("color", {"ink": "#ffe000", "second_color": "#00c0ff"} if _t == "clock" else {"ink": "#ffe000"})
+
+
+def over(frame, bg):
+    """RGBA straight alpha over a flat colour -> RGB."""
+    a = frame[..., 3:].astype(np.float64) / 255.0
+    return frame[..., :3] * a + np.asarray(bg, np.float64) * (1.0 - a)
+
+
+def test_every_effect_offers_a_transparent_colour():
+    seen = set()
+    for cls in render.all_renderers():
+        if not (cls.type.startswith("fx:") or cls.type == "clock"):
+            continue
+        seen.add(cls.type)
+        flagged = [s.key for s in cls.params if s.kind == "color" and s.transparent]
+        assert flagged, cls.type
+        r = cls({flagged[0]: "transparent"}, ENV)
+        f = r.render(ctx(0.4, face=None, w=config.W, h=config.H) if cls.type in ALL_TARGET else ctx(0.4))
+        assert f.dtype == np.uint8 and f.shape[-1] == 4, cls.type
+        assert (f[..., 3] == 0).any() and (f[..., 3] == 255).any(), cls.type
+    assert seen == set(ALL_TYPES)
+
+
+def test_transparent_flag_in_catalog():
+    cat = {e["type"]: {p["key"]: p for p in e["params"]} for e in render.catalog()}
+    wanted = {"fx:quarters": {"color", "color2", "color3", "color4"}, "fx:eq": {"color", "bg"},
+              "fx:pulse": {"bg"}, "fx:heart": {"bg"}}
+    for typ in ALL_TYPES:
+        flagged = {k for k, p in cat[typ].items() if p.get("transparent")}
+        assert flagged == wanted.get(typ, {"color"}), typ
+        assert all(cat[typ][k]["kind"] == "color" for k in flagged)
+
+
+@pytest.mark.parametrize("typ", sorted(SEE_THROUGH))
+def test_transparent_background_composites_to_the_opaque_picture(typ):
+    key, extra = SEE_THROUGH[typ]
+    inked = False
+    for beat in (0.0, 0.37, 1.0, 2.6):
+        t = draw(typ, beat, {**extra, key: "transparent"})
+        assert t.dtype == np.uint8 and t.shape == (config.FACE, config.FACE, 4), typ
+        assert (t[..., 3] == 0).any(), (typ, beat)                       # the background is not drawn
+        inked |= bool((t[..., 3] > 0).any())                             # (a fill is still empty on the first beat)
+        for bg in ((0, 0, 0), (255, 255, 255)):
+            o = draw(typ, beat, {**extra, key: "#%02x%02x%02x" % bg})
+            assert o.shape == (config.FACE, config.FACE, 3)
+            err = np.abs(over(t, bg) - o).max()
+            assert err <= 2.0, (typ, beat, bg, err)
+    assert inked, typ
+
+
+@pytest.mark.parametrize("typ", sorted(ALL_TARGET))
+def test_transparent_whole_sign(typ):
+    key, extra = SEE_THROUGH[typ]
+    f = make(typ, **extra, **{key: "transparent"}).render(ctx(1.3, face=None, w=config.W, h=config.H))
+    assert f.shape == (config.H, config.W, 4) and f.dtype == np.uint8 and (f[..., 3] == 0).any() and f[..., 3].any()
+
+
+def test_transparent_where_not_allowed_is_an_invalid_colour():
+    g = draw("fx:wave", 0.5, {"ink": "transparent"})                  # an ink colour
+    assert g.shape[-1] == 3 and np.array_equal(g, draw("fx:wave", 0.5, {"ink": "bogus"}))
+    assert np.array_equal(draw("fx:pulse", 0.5, {"color": "transparent"}), draw("fx:pulse", 0.5, {"color": "bogus"}))
+
+
+def test_transparent_circle_ink_does_not_depend_on_the_circle():
+    # With an opaque circle the ink must differ from it (swapped when equal); with none, black ink stays black.
+    f = draw("fx:wave", 0.0, {"color": "transparent", "ink": "#000000"})
+    solid = f[..., 3] > 200
+    assert solid.any() and not f[solid][:, :3].any()
+    assert (draw("fx:wave", 0.0, {"color": "transparent", "ink": "random"})[..., 3] > 200).any()
+
+
+def test_transparent_alpha_is_coverage():
+    f = draw("fx:pulse", 0.0, {"bg": "transparent", "color": "#ff0000"})        # a full disc
+    a = f[..., 3]
+    assert a[C, C] == 255 and a[0, 0] == 0
+    assert ((a > 0) & (a < 255)).sum() > 100                              # anti-aliased rim
+    assert abs(a.astype(float).sum() / 255.0 - math.pi * R * R) < 0.02 * math.pi * R * R
+    assert (np.abs(f[a > 0][:, :3].astype(int) - RED).max()) <= 1         # no halo: edge pixels keep the colour
+
+
+def test_transparent_quarter_shows_what_is_below():
+    f = draw("fx:quarters", 0.5, {"color": "transparent", "color2": "#00ff00", "color3": "#0000ff", "color4": "#ff0000"})
+    assert f[C - 40, C - 40, 3] == 0 and f[C - 40, C + 40, 3] == 255 and f[C + 40, C + 40, 3] == 255
+    assert tuple(f[C - 40, C + 40, :3]) == (0, 255, 0)
+
+
+def test_transparent_clock_pin_is_punched_out():
+    f = draw("fx:clock", 0.0, {"color": "transparent"})
+    assert f[C, C, 3] == 0
+    assert f[C, C + int(10 * R / 128), 3] == 255                          # the hub ring around the pin
+
+
+def test_transparent_unlit_bulbs_are_partly_see_through():
+    f = draw("fx:chase", 0.5, {"color": "transparent", "unlit": 30})          # one bulb lit
+    cx, cy = C + 100 * R / 128 * math.sin(math.radians(60)), C - 100 * R / 128 * math.cos(math.radians(60))
+    assert abs(int(f[int(cy), int(cx), 3]) - 77) <= 1                     # 30 % of 255
+    assert f[C - int(100 * R / 128), C, 3] == 255
+
+
+def test_transparent_eq_rim_leaves_outside_empty():
+    f = draw("fx:eq", 0.0, {"color": "transparent", "bg": "#000000"})
+    assert f[0, 0, 3] == 0 and f[C, C, 3] == 255
+
+
+def test_transparent_speed():
+    # The see-through path has four channels instead of three but must stay in the same class.
+    for typ, (key, extra) in SEE_THROUGH.items():
+        opaque, clear = make(typ, **extra), make(typ, **extra, **{key: "transparent"})
+        times = []
+        for r in (opaque, clear):
+            r.render(ctx(0.0))
+            t0 = time.perf_counter()
+            for i in range(20):
+                r.render(ctx(i * 0.137))
+            times.append((time.perf_counter() - t0) / 20 * 1000)
+        assert times[1] < max(4.0 * times[0], 3.0), (typ, times)

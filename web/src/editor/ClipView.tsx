@@ -1,8 +1,8 @@
 import { memo, useEffect, useMemo, type CSSProperties } from 'react';
 import { api, mediaThumbUrl } from '../api/client';
-import type { Clip, ClipType, MediaItem, Peaks } from '../api/types';
+import type { Clip, ClipType, MediaItem, Peaks, Target } from '../api/types';
 import { createStore, useStore } from '../state/store';
-import { categoryHue, clipSummary } from './clipinfo';
+import { categoryHue, clipDetails, clipSummary, colorValue, seeThrough, TRANSPARENT } from './clipinfo';
 import { mediaSpeed } from './model';
 
 // ---- waveform peaks, fetched once per media item
@@ -66,11 +66,15 @@ function Waveform({ mediaId, clip, mediaDuration, loop }: { mediaId: string; cli
   );
 }
 
+/** A small checkerboard: the usual picture of "nothing here, see through". */
+export const CHECKER = 'repeating-conic-gradient(#9aa0aa 0 25%, #3a3e46 0 50%) 0 0 / 6px 6px';
+
 function swatch(clip: Clip, type: ClipType | undefined, trackColor: string): string | null {
   const spec = type?.params.find((p) => p.kind === 'color');
   if (!spec) return null;
-  const v = String(clip.params[spec.key] ?? spec.default ?? '');
+  const v = String(colorValue(clip, type, spec) ?? '');
   if (v === 'face') return trackColor;
+  if (v === TRANSPARENT) return CHECKER;
   if (v === 'random') return 'conic-gradient(#f44, #fd0, #4f6, #4cf, #a4f, #f44)';
   return /^#[0-9a-f]{6}$/i.test(v) ? v : null;
 }
@@ -90,12 +94,18 @@ export interface ClipViewProps {
   whole?: boolean;
   /** Drawn faded: its (hidden) track is muted. */
   dim?: boolean;
+  /** Where it plays (for the tooltip). */
+  target?: Target;
+  /** A light's clip lying over a whole-sign clip: drawn on top of the block, set off from it. */
+  over?: boolean;
   top?: number;
   height?: number;
   offsetX?: number;
 }
 
-export const ClipView = memo(function ClipView({ clip, pps, selected, problems, type, media, trackColor, ghost, invalid, whole, dim, top, height, offsetX = 0 }: ClipViewProps) {
+export const ClipView = memo(function ClipView({
+  clip, pps, selected, problems, type, media, trackColor, ghost, invalid, whole, dim, target, over, top, height, offsetX = 0,
+}: ClipViewProps) {
   const w = Math.max(3, clip.duration * pps);
   const hue = categoryHue(type?.category ?? 'unknown');
   const mediaId = typeof clip.params.media === 'string' && clip.params.media ? clip.params.media : null;
@@ -103,7 +113,8 @@ export const ClipView = memo(function ClipView({ clip, pps, selected, problems, 
   // a video's own sound plays only at speed 1 (as the server does it)
   const sounding = !!media && media.status === 'ready' && media.has_audio
     && (media.kind === 'audio' || (clip.params.sound !== false && Math.abs(mediaSpeed(clip) - 1) < 1e-3));
-  const summary = clipSummary(clip, type, media ? new Map([[media.id, media]]) : new Map());
+  const lib = media ? new Map([[media.id, media]]) : new Map<string, MediaItem>();
+  const summary = clipSummary(clip, type, lib);
   const sw = swatch(clip, type, trackColor);
   const narrow = w < 26;
   const style: CSSProperties & Record<string, string | number> = {
@@ -113,21 +124,26 @@ export const ClipView = memo(function ClipView({ clip, pps, selected, problems, 
   };
   if (top !== undefined) style.top = top;
   if (height !== undefined) style.height = height;
-  const cls = ['clip', selected && 'sel', problems?.length && 'bad', ghost && 'ghost', invalid && 'invalid', !type && 'unknown', whole && 'whole', dim && 'dim']
+  const cls = ['clip', selected && 'sel', problems?.length && 'bad', ghost && 'ghost', invalid && 'invalid', !type && 'unknown', whole && 'whole', dim && 'dim', over && 'over', seeThrough(clip, type) && 'see']
     .filter(Boolean).join(' ');
-  const title = problems?.length ? problems.join('\n') : dim ? 'Muted in this set: any edit plays it again' : undefined;
+  // a native tooltip: it never takes the pointer from a drag; screen readers get the name and the details
+  const details = ghost ? null : clipDetails(clip, type, lib, target ?? (whole ? 'all' : 'face0'), over);
+  const title = details && [...details, ...(problems ?? []), ...(dim ? ['Muted in this set: any edit plays it again'] : [])].join('\n');
   return (
-    <div className={cls} data-clip={ghost ? undefined : clip.id} data-type={clip.type} data-whole={whole ? '' : undefined} style={style} title={title}>
+    <div className={cls} data-clip={ghost ? undefined : clip.id} data-type={clip.type} data-whole={whole ? '' : undefined} style={style}
+      title={title ?? undefined} aria-label={details?.[0]}>
       {showThumb && <div className="clip-thumb" style={{ backgroundImage: `url(${mediaThumbUrl(media!.id, media!.version)})` }} />}
       {sounding && mediaId && <Waveform mediaId={mediaId} clip={clip} mediaDuration={media!.duration} loop={clip.params.loop === true} />}
       {clip.fade_in > 0 && <div className="clip-fade in" style={{ width: Math.min(w, clip.fade_in * pps) }} />}
       {clip.fade_out > 0 && <div className="clip-fade out" style={{ width: Math.min(w, clip.fade_out * pps) }} />}
       {!narrow && (
         <div className="clip-label">
-          {whole && <span className="clip-whole" title="Whole sign: on all three lights"><i /><i /><i /></span>}
-          {sw && <i className="clip-swatch" style={{ background: sw }} />}
-          <span className="clip-type">{type?.label ?? clip.type}</span>
-          {summary && <span className={`clip-sum ${typeof clip.params.text === 'string' ? 'text' : ''}`}>{summary}</span>}
+          <div className="clip-line1">
+            {whole && <span className="clip-whole"><i /><i /><i /></span>}
+            {sw && <i className="clip-swatch" style={{ background: sw }} />}
+            <span className="clip-type">{type?.label ?? clip.type}</span>
+          </div>
+          {summary && <div className={`clip-sum ${typeof clip.params.text === 'string' ? 'text' : ''}`}>{summary}</div>}
         </div>
       )}
       {!!problems?.length && <span className="clip-warn" aria-label={problems.join('; ')}>!</span>}

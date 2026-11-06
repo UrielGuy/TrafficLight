@@ -209,7 +209,7 @@ class Video(ClipRenderer):
         ParamSpec("speed", "Speed", "number", 1.0, min=0, max=8, step=0.05,
                   help="1 = normal; sound plays only at 1"),
         FIT_PARAM,
-        ParamSpec("sound", "Sound", "bool", True, help="Play the video's own sound"),
+        ParamSpec("sound", "Sound", "bool", False, help="Play the video's own sound (off: the set's audio tracks carry the music)"),
         ParamSpec("volume", "Volume", "number", 1.0, min=0, max=1, step=0.01),
     ]
 
@@ -327,7 +327,7 @@ class Video(ClipRenderer):
         return arr.copy()
 
     def audio(self, ctx: RenderContext) -> Optional[AudioCue]:
-        if not self.p.get("sound", True) or abs(number(self.p, "speed", 1.0, 0.0, 8.0) - 1.0) > 1e-3:
+        if not self.p.get("sound", False) or abs(number(self.p, "speed", 1.0, 0.0, 8.0) - 1.0) > 1e-3:
             return None
         m = self._ready_item()
         if m is None or not m.has_audio or m.duration <= 0 or self.env.media is None:
@@ -356,7 +356,7 @@ class Video(ClipRenderer):
         p = cls.with_defaults(params)
         problems = media_problems(p, env, ("video",))
         m = lookup(env, p.get("media"))
-        if not problems and m is not None and m.has_audio and p.get("sound", True) \
+        if not problems and m is not None and m.has_audio and p.get("sound", False) \
                 and abs(number(p, "speed", 1.0, 0.0, 8.0) - 1.0) > 1e-3:
             problems.append("The sound plays only at speed 1")
         return problems

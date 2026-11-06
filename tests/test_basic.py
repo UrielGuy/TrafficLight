@@ -24,6 +24,7 @@ def test_registered_with_catalog_entries():
     assert entries["light"]["category"] == "basic" and entries["light"]["targets"] == ["face", "all"]
     assert entries["text"]["category"] == "basic" and entries["text"]["targets"] == ["face"]
     assert entries["off"]["category"] == "basic" and entries["off"]["targets"] == ["face", "all"] and entries["off"]["params"] == []
+    assert entries["off"]["masked"] is False and entries["light"]["masked"] is True
     basic = ("light", "off", "text", "clock")
     assert [t for t in entries if t in basic] == list(basic)     # their order in the library
     for c in (ctx(), ctx(all_=True)):

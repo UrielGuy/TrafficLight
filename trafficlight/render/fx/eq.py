@@ -30,8 +30,9 @@ class Eq(c.Fx):
     description = "Rainbow equaliser bars of LED segments that jump to a new height on every beat and sink back."
     targets = ("face", "all")
     params = [
-        c.color_param("color", "Rim", "face"),
-        c.color_param("bg", "Background", "#000000"),
+        c.color_param("color", "Rim", "face", "Transparent: nothing outside the bars' circle.", transparent=True),
+        c.color_param("bg", "Background", "#000000", "Transparent: only the bars are drawn, over what is below.",
+                      transparent=True),
         c.hue_param("hue_color", "Rim: hue jump per beat (°)"),
         c.hue_param("hue_bars", "Bars: hue jump per beat (°)"),
         ParamSpec("bars", "Bars", "int", 7, 3, 16, 1),
@@ -71,8 +72,8 @@ class Eq(c.Fx):
         colors = _bar_colors(bars, self.num("hue_bars"))
         lit = level[bar[None, :], seg_i[:, None]]                    # (h, w)
         alpha = (lit * vcov[:, None] * hcov[None, :]).astype(np.float32)
-        img = c.canvas(w, h, bg)
-        img += alpha[..., None] * (colors[bar][None, :, :] - img)
+        img = c.canvas(w, h, bg, four=c.is_clear(rim))
+        c.paint_map(img, alpha, colors[bar][None, :, :])
         # The rim of the circle colour is drawn last, over the bars.
         rim_w = 2.5 * c.R / 64.0
         c.paint(img, c.cov((c.R - rim_w) - g.d), rim)

@@ -346,7 +346,13 @@ class Player:
         lookahead: the set time playback jumps to next (a loop back to the start), so the
         renderers needed there are kept or made ahead."""
         wall = wall_time or _dt.datetime.now()
-        canvas = background(self.env.settings).copy()
+        # Two pictures: `lit` is what is seen through the round lights (every clip, uncut), `rest`
+        # what is seen outside them (only clips with the mask off). They are joined through the
+        # lights' discs at the end. Cutting each clip to the disc as it is blended would let a
+        # lower clip show through the soft rim of the one above it.
+        bg = background(self.env.settings)
+        lit = bg.copy()
+        rest: Optional[np.ndarray] = None       # the background until an unmasked clip paints there
         cues: list[AudioCue] = []
 
         near = self._window(t, audio)
@@ -385,8 +391,13 @@ class Player:
                 continue
             if img is None:
                 continue
-            self._blend(canvas[y0:y0 + h], img, clip, track.target, face, k)
+            masked = r.masked and (clip.mask is None or clip.mask)
+            if not masked and rest is None:
+                rest = bg.copy()
+            self._blend(lit[y0:y0 + h], None if masked else rest[y0:y0 + h], img, clip, k)
 
+        outside = bg if rest is None else rest
+        canvas = outside + (lit - outside) * sign_mask()[..., None]
         np.clip(canvas, 0, 255, out=canvas)
         return np.rint(canvas).astype(np.uint8), cues
 
@@ -404,7 +415,9 @@ class Player:
         cues.append(AudioCue(key=clip.id, path=cue.path, position=cue.position,
                              gain=max(0.0, float(cue.gain)) * fade_gain(clip, ctx.t)))
 
-    def _blend(self, box: np.ndarray, img: Any, clip: Clip, target: str, face: Optional[int], k: float) -> None:
+    def _blend(self, box: np.ndarray, outside: Optional[np.ndarray], img: Any, clip: Clip, k: float) -> None:
+        """Blend a clip's picture over its box of the lit picture, and over `outside` (its box of
+        the picture outside the lights) when the clip is not cut to the lights."""
         img = np.asarray(img)
         h, w = box.shape[:2]
         if img.ndim != 3 or img.shape[0] != h or img.shape[1] != w or img.shape[2] not in (3, 4):
@@ -416,19 +429,16 @@ class Player:
         alpha: Any = None
         if img.shape[2] == 4:
             alpha = img[..., 3].astype(np.float32) * (1.0 / 255.0)
-        # Only the round lights are seen on the sign, so a clip is cut to them unless it says otherwise.
-        if clip.mask is None or clip.mask:
-            m = face_mask() if face is not None else sign_mask()
-            alpha = m if alpha is None else alpha * m
         if k < 1.0:
             alpha = k if alpha is None else alpha * k
         rgb = img[..., :3].astype(np.float32)
-        if alpha is None:
-            box[:] = rgb
-        elif np.isscalar(alpha):
-            box += (rgb - box) * alpha
-        else:
-            box += (rgb - box) * alpha[..., None]
+        for dst in (box,) if outside is None else (box, outside):
+            if alpha is None:
+                dst[:] = rgb
+            elif np.isscalar(alpha):
+                dst += (rgb - dst) * alpha
+            else:
+                dst += (rgb - dst) * alpha[..., None]
 
     def close(self) -> None:
         if self._closed:

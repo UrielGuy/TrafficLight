@@ -2,15 +2,15 @@
 // splitting and the immutable edits of a set. Pure functions, no React (unit-tested).
 //
 // Rules (also described in the editor's help):
-//  * Clips on one track never overlap, and a whole-sign clip (on a track with
-//    target "all") takes the three lights over: it overlaps no light clip and no
-//    other whole-sign clip. So a light track's lane is occupied by its own clips
-//    plus every whole-sign clip, and the whole-sign lane by every light clip plus
-//    the whole-sign clips; audio tracks only by their own clips. Sets that break
-//    this (older data) still load and play: only what is moved next must fit.
+//  * Clips on one track never overlap, and whole-sign clips (on tracks with
+//    target "all") never overlap each other, whichever "all" track they are on.
+//    A clip on a light may lie over a whole-sign clip: the whole-sign clip is the
+//    backdrop and the light's clip replaces it in that light (the player paints
+//    "all" tracks beneath the lights). Sets that break the rules (older data)
+//    still load and play: only what is moved next must fit.
 //  * Whole-sign tracks have no row of their own: their clips are drawn as one
-//    block across the light rows (rowTracks). Light rows stay together above
-//    the audio rows so that block is one rectangle.
+//    block across the light rows (rowTracks), behind the clips of those rows.
+//    Light rows stay together above the audio rows so that block is one rectangle.
 //  * A clip that is moved goes to the free
 //    position nearest to where it is dragged: if the spot under the pointer is
 //    taken, it butts up against the neighbour (or hops past it when the pointer is
@@ -52,15 +52,12 @@ export interface Span {
 }
 
 /**
- * What a clip on `track` may not overlap (all but `exclude`), sorted by start. The spans of
- * different tracks may overlap each other; the functions below do not need them merged.
+ * What a clip on `track` may not overlap (all but `exclude`), sorted by start: the clips of its
+ * own track, or for a whole-sign clip those of every whole-sign track. The spans of different
+ * tracks may overlap each other; the functions below do not need them merged.
  */
 export function blockers(set: SetData, track: Track, exclude?: ReadonlySet<string>): Span[] {
-  const lane = (t: Track) => {
-    if (track.target === 'audio' || t.target === 'audio') return t.id === track.id;
-    if (track.target === 'all') return true;
-    return t.id === track.id || t.target === 'all';
-  };
+  const lane = (t: Track) => (track.target === 'all' ? t.target === 'all' : t.id === track.id);
   return set.tracks
     .filter(lane)
     .flatMap((t) => t.clips)
@@ -464,25 +461,25 @@ export function moveTrack(set: SetData, id: string, to: number): SetData {
 // ---------------------------------------------------------------- whole sign <-> one light
 export type Converted = { set: SetData } | { error: string };
 
-/** Puts a light clip on the whole sign at the same time, if no light clip is in the way. */
+/** Puts a light clip on the whole sign at the same time, if no other whole-sign clip plays then. */
 export function toWhole(set: SetData, id: string): Converted {
   const loc = findClip(set, id);
   if (!loc || loc.track.target === 'all') return { set };
   const w = wholeTrack(set);
   if (collides(blockers(w.set, w.track, new Set([id])), loc.clip.start, clipEnd(loc.clip))) {
-    return { error: 'Other clips play on the lights during this one: move them away first' };
+    return { error: 'Another whole-sign clip plays during this one: move it away first' };
   }
   return { set: applyMoves(w.set, [{ id, toTrack: w.track.id, start: loc.clip.start }]) };
 }
 
-/** Puts a whole-sign clip on one light at the same time: `prefer` if it has room, else the first that has. */
+/** Puts a whole-sign clip on one light at the same time: `prefer` if its row is free then, else the first that is. */
 export function toLight(set: SetData, id: string, prefer?: string): Converted {
   const loc = findClip(set, id);
   if (!loc || loc.track.target !== 'all') return { set };
   const lights = rowTracks(set.tracks).filter((t) => isLight(t.target));
   const order = [...lights.filter((t) => t.id === prefer), ...lights.filter((t) => t.id !== prefer)];
   const free = order.find((t) => !collides(blockers(set, t, new Set([id])), loc.clip.start, clipEnd(loc.clip)));
-  if (!free) return { error: lights.length ? 'No light is free for the whole length of this clip' : 'There is no light track to put it on' };
+  if (!free) return { error: lights.length ? 'Every light has another clip during this one: make room on one first' : 'There is no light track to put it on' };
   return { set: applyMoves(set, [{ id, toTrack: free.id, start: loc.clip.start }]) };
 }
 

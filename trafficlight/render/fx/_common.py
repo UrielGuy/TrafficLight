@@ -72,24 +72,67 @@ def cov(sd: np.ndarray) -> np.ndarray:
     return np.clip(0.5 - sd, 0.0, 1.0)
 
 
-def canvas(w: int, h: int, rgb: colors.RGB) -> np.ndarray:
-    img = np.empty((h, w, 3), np.float32)
-    img[:] = np.asarray(rgb, np.float32)
+# A colour here is (r, g, b), or (r, g, b, a) with a on 0..255 for one that lets what is below
+# show through; CLEAR is the "transparent" param value. A canvas with a transparent base has four
+# channels holding premultiplied RGB and alpha (0..255), so painting is the same one formula
+# whatever the base: img += cov * (colour - img), the colour premultiplied too. Painting CLEAR
+# erases.
+CLEAR = (0, 0, 0, 0)
+
+
+def is_clear(rgb) -> bool:
+    return len(rgb) == 4
+
+
+def vec(rgb, four: bool) -> np.ndarray:
+    """A colour as the vector a canvas of 3 or 4 channels holds."""
+    if len(rgb) == 4:
+        a = rgb[3] / 255.0
+        return np.array((rgb[0] * a, rgb[1] * a, rgb[2] * a, rgb[3]), np.float32)
+    return np.array((*rgb, 255.0) if four else rgb, np.float32)
+
+
+def canvas(w: int, h: int, rgb, four: bool = False) -> np.ndarray:
+    """A float canvas in `rgb`; four channels if that is transparent or `four` (something clear is painted later)."""
+    four = four or len(rgb) == 4
+    img = np.empty((h, w, 4 if four else 3), np.float32)
+    img[:] = vec(rgb, four)
     return img
 
 
-def paint(img: np.ndarray, alpha: np.ndarray, rgb: colors.RGB) -> None:
+def paint(img: np.ndarray, alpha: np.ndarray, rgb) -> None:
     """Blend `rgb` over img where alpha (h, w) says so."""
-    img += alpha[..., None] * (np.asarray(rgb, np.float32) - img)
+    img += alpha[..., None] * (vec(rgb, img.shape[2] == 4) - img)
+
+
+def paint_map(img: np.ndarray, alpha: np.ndarray, rgb: np.ndarray) -> None:
+    """`paint` with a colour per pixel: rgb (h, w, 3) or (1, w, 3) of opaque colours."""
+    if img.shape[2] == 4:
+        rgb = np.concatenate((rgb, np.full(rgb.shape[:2] + (1,), 255.0, np.float32)), axis=2)
+    img += alpha[..., None] * (rgb - img)
 
 
 def to_u8(img: np.ndarray) -> np.ndarray:
-    return (np.clip(img, 0.0, 255.0) + 0.5).astype(np.uint8)
+    """RGB, or RGBA with straight alpha from a four channel canvas."""
+    if img.shape[2] == 3:
+        return (np.clip(img, 0.0, 255.0) + 0.5).astype(np.uint8)
+    a = np.clip(img[..., 3:], 0.0, 255.0)
+    out = np.empty(img.shape, np.uint8)
+    out[..., :3] = np.minimum(img[..., :3] * (255.0 / np.maximum(a, 1e-3)), 255.0) + 0.5
+    out[..., 3:] = a + 0.5
+    return out
 
 
-def mix(a: colors.RGB, b: colors.RGB, k: float) -> colors.RGB:
+def mix(a, b, k: float):
+    """a toward b by k; with a transparent `a`, b at k of full opacity."""
     k = max(0.0, min(1.0, k))
-    return (a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k)  # type: ignore[return-value]
+    if len(a) == 3 and len(b) == 3:
+        return (a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k)
+    pa, pb = vec(a, True), vec(b, True)
+    p = pa + (pb - pa) * k
+    if p[3] <= 0.0:
+        return CLEAR
+    return (*(p[:3] * (255.0 / p[3])), float(p[3]))
 
 
 def capsule_sd(x: np.ndarray, y: np.ndarray, ax: float, ay: float, bx: float, by: float,
@@ -147,8 +190,8 @@ def mix32(x):
 
 
 # ---------------------------------------------------------------- params and base class
-def color_param(key: str, label: str, default: str, help: str = "") -> ParamSpec:
-    return ParamSpec(key, label, "color", default, help=help)
+def color_param(key: str, label: str, default: str, help: str = "", transparent: bool = False) -> ParamSpec:
+    return ParamSpec(key, label, "color", default, help=help, transparent=transparent)
 
 
 def hue_param(key: str, label: str) -> ParamSpec:
@@ -197,22 +240,30 @@ class Fx(ClipRenderer):
         return bool(v)
 
     def col(self, ctx: RenderContext, key: str, hue_key: str = "", avoid: Optional[colors.RGB] = None,
-            fallback: colors.RGB = WHITE) -> colors.RGB:
+            fallback: colors.RGB = WHITE):
+        """A colour param as RGB, or CLEAR when it says "transparent" and its spec allows that;
+        elsewhere "transparent" is as invalid as any other junk."""
+        spec = self._spec(key)
+        if spec is not None and spec.transparent and colors.is_transparent(self.p.get(key)):
+            return CLEAR
         hue = self.num(hue_key) if hue_key else 0.0
         return colors.resolve(self.p.get(key), ctx, key, hue, avoid, fallback)
 
-    def pair(self, ctx: RenderContext) -> tuple[colors.RGB, colors.RGB]:
-        """(circle colour, ink); the ink is never the same as the circle (the old sign's rule)."""
+    def pair(self, ctx: RenderContext):
+        """(circle colour, ink); the ink is never the same as the circle (the old sign's rule),
+        which there is nothing to clash with when the circle is transparent."""
         base = self.col(ctx, "color", "hue_color", fallback=ctx.face_color)
-        ink = self.col(ctx, "ink", "hue_ink", avoid=base, fallback=BLACK)
-        if ink == base:
+        clear = is_clear(base)
+        ink = self.col(ctx, "ink", "hue_ink", avoid=None if clear else base, fallback=BLACK)
+        if not clear and ink == base:
             ink = WHITE if base == BLACK else BLACK
         return base, ink
 
 
 def colour_params(color: str = "face", ink: Optional[str] = "#000000",
                   color_label: str = "Colour", ink_label: str = "Ink") -> list[ParamSpec]:
-    out = [color_param("color", color_label, color)]
+    out = [color_param("color", color_label, color, "Transparent: only the ink is drawn, over what is below.",
+                       transparent=True)]
     if ink is not None:
         out.append(color_param("ink", ink_label, ink))
     out.append(hue_param("hue_color", f"{color_label}: hue jump per beat (°)"))

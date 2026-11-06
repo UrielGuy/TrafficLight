@@ -11,16 +11,19 @@ from . import _common as c
 
 
 # ---------------------------------------------------------------- quarters
+_QUARTER_HELP = "Transparent: that quarter shows what is below."
+
+
 @register
 class Quarters(c.Fx):
     type = "fx:quarters"
     label = "Quarters"
     description = "Four colours in quarters that turn 30 degrees clockwise on every beat."
     params = [
-        c.color_param("color", "Colour 1 (top left)", "face"),
-        c.color_param("color2", "Colour 2 (top right)", "#ffffff"),
-        c.color_param("color3", "Colour 3 (bottom right)", "#000000"),
-        c.color_param("color4", "Colour 4 (bottom left)", "#ffffff"),
+        c.color_param("color", "Colour 1 (top left)", "face", _QUARTER_HELP, transparent=True),
+        c.color_param("color2", "Colour 2 (top right)", "#ffffff", _QUARTER_HELP, transparent=True),
+        c.color_param("color3", "Colour 3 (bottom right)", "#000000", _QUARTER_HELP, transparent=True),
+        c.color_param("color4", "Colour 4 (bottom left)", "#ffffff", _QUARTER_HELP, transparent=True),
         c.hue_param("hue_color", "Hue jump per beat (°)"),
         c.num_param("turn", "Turn time (beats)", 0.2, 0.0, 1.0, 0.05,
                     "How long the 30 degree turn takes after each beat; 0 snaps."),
@@ -30,8 +33,10 @@ class Quarters(c.Fx):
         w, h = c.box(ctx)
         n, ph = c.beat_state(ctx)
         base = self.col(ctx, "color", "hue_color", fallback=ctx.face_color)
-        cols = np.array([base] + [self.col(ctx, k, "hue_color", fallback=c.WHITE)
-                                  for k in ("color2", "color3", "color4")], np.float32)
+        quarters = [base] + [self.col(ctx, k, "hue_color", fallback=c.WHITE) for k in ("color2", "color3", "color4")]
+        # Blended premultiplied, so an edge between a clear quarter and a coloured one fades in alpha only.
+        four = any(c.is_clear(q) for q in quarters)
+        cols = np.array([c.vec(q, four) for q in quarters], np.float32)
         turn = self.num("turn")
         done = 1.0 if turn <= 0 else c.ease_out(ph / turn)
         rot = math.radians(30.0 * (n - (1.0 - done) if n > 0 else 0.0))
@@ -54,7 +59,8 @@ class Pulse(c.Fx):
     description = "A disc that is full size on the beat and eases back to a smaller one."
     params = [
         c.color_param("color", "Colour", "face"),
-        c.color_param("bg", "Background", "#000000"),
+        c.color_param("bg", "Background", "#000000", "Transparent: only the disc is drawn, over what is below.",
+                      transparent=True),
         c.hue_param("hue_color", "Hue jump per beat (°)"),
         c.num_param("min_size", "Smallest size (%)", 75, 10, 100, 5),
     ]
@@ -106,7 +112,8 @@ class Heart(c.Fx):
     description = "A heart that is full size on the beat and eases back to 80 percent."
     params = [
         c.color_param("color", "Heart", "face"),
-        c.color_param("bg", "Background", "#000000"),
+        c.color_param("bg", "Background", "#000000", "Transparent: only the heart is drawn, over what is below.",
+                      transparent=True),
         c.hue_param("hue_color", "Hue jump per beat (°)"),
         c.num_param("min_size", "Smallest size (%)", 80, 20, 100, 5),
     ]
@@ -125,7 +132,7 @@ class Heart(c.Fx):
         lobes = np.hypot(ax - 47.0 * z, g.y - (10.0 - 47.0) * z) - 94.0 * z * math.sqrt(0.5)
         bg = self.col(ctx, "bg", fallback=c.BLACK)
         color = self.col(ctx, "color", "hue_color", fallback=ctx.face_color)
-        if color == bg:
+        if not c.is_clear(bg) and color == bg:
             color = c.WHITE if bg == c.BLACK else c.BLACK
         img = c.canvas(w, h, bg)
         c.paint(img, c.cov(np.minimum(diamond, lobes)), color)

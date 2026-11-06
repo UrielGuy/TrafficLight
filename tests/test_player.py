@@ -49,6 +49,26 @@ def test_a_light_clip_shows_over_a_whole_sign_clip_wherever_the_tracks_are():
         assert tuple(f[F + C, 2]) == (0, 0, 0)          # right up to the rim of the middle light
 
 
+def test_a_light_clip_replaces_the_clip_below_right_up_to_the_rim():
+    """Both are cut to the same soft-edged disc; the lower one must not glow through the rim."""
+    whole = ("all", [solid("#0000ff")])
+    alone = Player(env(off_style="dark"), make_set(("face1", [solid("#ff0000")])), background_init=False).render(0.5)[0]
+    over = Player(env(off_style="dark"), make_set(whole, ("face1", [solid("#ff0000")])), background_init=False).render(0.5)[0]
+    assert (over[F:2 * F] == alone[F:2 * F]).all()                    # no blue anywhere in the middle light
+    assert (over[:F, :, 2] > 0).any() and (over[F:2 * F, :, 2] == 0).all()
+    # Off blacks out its two panels entirely, even under a clip that fills the rectangle
+    box = ("all", [solid("#0000ff", mask=False)])
+    for mask in (None, True, False):
+        f, _ = Player(env(off_style="dark"), make_set(box, ("face1", [Clip(type="off", start=0, duration=4, mask=mask)])),
+                      background_init=False).render(0.5)
+        assert not f[F:2 * F].any() and (f[:F] == (0, 0, 255)).all() and (f[2 * F:] == (0, 0, 255)).all()
+    # a soft-edged clip over a rectangle-filling one still has its anti-aliased rim
+    f, _ = Player(env(off_style="dark"), make_set(box, ("face1", [solid("#ff0000")])), background_init=False).render(0.5)
+    assert tuple(f[F, 0]) == (0, 0, 255) and tuple(f[F + C, C]) == (255, 0, 0)
+    rim = f[F:2 * F][(face_mask() > 0.2) & (face_mask() < 0.8)]
+    assert len(rim) and (rim[:, 0] > 0).all() and (rim[:, 2] > 0).all()
+
+
 def test_text_with_a_transparent_background_sits_over_a_whole_sign_clip():
     whole = ("all", [solid("#0000ff")])
     text = ("face1", [Clip(type="text", start=0, duration=4, params={"text": "I", "bg": "transparent", "ink": "#ffffff"})])

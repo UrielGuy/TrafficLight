@@ -104,13 +104,20 @@ For set time `t`:
 2. Walk the visual tracks from the bottom layer to the top, skipping muted
    ones: first the `all` tracks from the last to the first, then the lights'
    tracks from the last to the first (`player.paint_order`), so a clip on a
-   light always shows over a whole-sign clip. On each, find the clip covering `t` (`start <= t < start + duration`),
-   render it into its box (128×128 at the light's rows for `faceN`, 128×384
-   for `all`), then apply, in this order: the renderer's own alpha (if RGBA),
-   the mask (`Clip.mask`; default True = anti-aliased disc of radius
-   `FACE_RADIUS` (half the box: it fills the light's 128 px) on a light, the three discs on `all`, because only the
-   round lights are seen on the sign; False fills the whole box), `opacity`,
-   `fade_in` / `fade_out` (linear), and alpha-blend over what is below.
+   light always shows over a whole-sign clip. On each, find the clip covering
+   `t` (`start <= t < start + duration`), render it into its box (128×128 at
+   the light's rows for `faceN`, 128×384 for `all`) and alpha-blend it over
+   what is below with the renderer's own alpha (if RGBA), `opacity` and
+   `fade_in` / `fade_out` (linear).
+   The mask (`Clip.mask`; default True, because only the round lights are
+   seen on the sign) is not applied clip by clip. Two pictures are kept: what
+   is seen through the lights (every clip) and what is seen outside them
+   (only clips with the mask off, and types with `masked = False` such as
+   `off`, which always fill their whole box). They are joined at the end
+   through the anti-aliased discs of radius `FACE_RADIUS` (half the box: a
+   disc fills its light's 128 px). So a clip on a light replaces the clip
+   below it right up to the rim, with nothing of the lower one left in the
+   soft edge.
 3. Collect an `AudioCue` from every active clip whose renderer returns one
    (audio tracks and videos with sound), set `key = clip.id`, multiply `gain`
    by the clip's `opacity` and fades.
@@ -135,7 +142,7 @@ from that, so adding a renderer needs no UI change.
 | type | where | what |
 | --- | --- | --- |
 | `light` | face, all | A plain disc in a colour (a lit traffic light). |
-| `off` | face, all | Black. On a light over a whole-sign clip it switches that light off. |
+| `off` | face, all | Black, over the whole box (never masked). On a light over a whole-sign clip it switches that light off. |
 | `text` | face | Text fitted in the light: automatic size and line breaks, Hebrew and English. |
 | `figure` | face | Animated pictogram (walking, dancing, DJ…). |
 | `fx:quarters`, `fx:pulse`, `fx:wave`, `fx:clock`, `fx:ecg`, `fx:ecgsweep`, `fx:heart`, `fx:ripples`, `fx:eq`, `fx:chase`, `fx:ball`, `fx:sparkle`, `fx:fillv`, `fx:fillx` | face (some also all) | Beat animations ported from the old sign. |
@@ -228,7 +235,7 @@ JSON everywhere. Errors: HTTP 4xx with `{"detail": "message"}`.
 | Call | Body → Result |
 | --- | --- |
 | `GET /api/state` | → `State` (below) |
-| `GET /api/catalog` | → `{"clip_types": [ClipType]}`; `ClipType` = `ClipRenderer.describe()`: `{"type","label","category","targets","default_duration","description","params":[ParamSpec]}`. Fonts and figures are `select` params with their options listed |
+| `GET /api/catalog` | → `{"clip_types": [ClipType]}`; `ClipType` = `ClipRenderer.describe()`: `{"type","label","category","targets","default_duration","description","params":[ParamSpec],"masked"}`. Fonts and figures are `select` params with their options listed |
 | `GET /api/sets` | → `[SetSummary]` in play order |
 | `POST /api/sets` | `Set` (id optional; `tracks` optional → default five tracks) → `Set` |
 | `GET /api/sets/{id}` | → `Set` |

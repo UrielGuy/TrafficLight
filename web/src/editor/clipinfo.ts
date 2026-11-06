@@ -1,7 +1,7 @@
 // What the editor knows about clip types and media: colours, labels, compatibility,
 // and how a palette item becomes a clip.
-import type { Clip, ClipType, MediaItem, MediaKind, Settings, Target } from '../api/types';
-import { accepts, newId } from './model';
+import type { Clip, ClipType, MediaItem, MediaKind, ParamSpec, Settings, Target } from '../api/types';
+import { accepts, clipEnd, newId, TARGET_NAMES } from './model';
 
 export type TypeMap = Map<string, ClipType>;
 
@@ -18,7 +18,7 @@ export function acceptsType(types: TypeMap, type: string, target: Target): boole
 }
 
 // Muted hues per palette category; the accent (amber) stays reserved for selection.
-const CATEGORY_HUES: Record<string, number> = { basic: 215, text: 200, figure: 165, beat: 275, media: 135, clock: 30 };
+const CATEGORY_HUES: Record<string, number> = { basic: 215, figure: 165, beat: 275, media: 135, clock: 30 };
 export function categoryHue(category: string): number {
   if (category in CATEGORY_HUES) return CATEGORY_HUES[category];
   let h = 0;
@@ -26,9 +26,9 @@ export function categoryHue(category: string): number {
   return h;
 }
 export const CATEGORY_LABELS: Record<string, string> = {
-  basic: 'Basic', text: 'Text', figure: 'Figures', beat: 'Beat animations', media: 'Media clips',
+  basic: 'Basic', figure: 'Figures', beat: 'Beat animations', media: 'Media clips',
 };
-export const CATEGORY_ORDER = ['basic', 'text', 'figure', 'beat', 'media'];
+export const CATEGORY_ORDER = ['basic', 'figure', 'beat', 'media'];
 
 export const MEDIA_CLIP_TYPE: Record<MediaKind, string> = { video: 'video', image: 'image', audio: 'audio' };
 
@@ -57,6 +57,85 @@ export function clipSummary(clip: Clip, type: ClipType | undefined, media: Map<s
     return first.options.find((o) => o.value === v)?.label ?? String(v ?? '');
   }
   return '';
+}
+
+export const TRANSPARENT = 'transparent';
+
+/**
+ * Sets made before "transparent" was a colour say so with a separate `transparent: true` param;
+ * the server still honours it for `bg`. It counts while the clip's type no longer lists it.
+ */
+function legacySeeThrough(clip: Clip, type: ClipType | undefined): boolean {
+  return clip.params.transparent === true && !!type && !type.params.some((p) => p.key === 'transparent');
+}
+
+/** The value a colour param really has: "transparent" for a background made see-through the old way. */
+export function colorValue(clip: Clip, type: ClipType | undefined, spec: ParamSpec): unknown {
+  if (spec.key === 'bg' && spec.transparent && legacySeeThrough(clip, type)) return TRANSPARENT;
+  return spec.key in clip.params ? clip.params[spec.key] : spec.default;
+}
+
+/** The clip's params with a colour param set; choosing a background drops the old see-through switch. */
+export function withColor(clip: Clip, type: ClipType | undefined, key: string, value: string): Record<string, unknown> {
+  const params: Record<string, unknown> = { ...clip.params, [key]: value };
+  if (key === 'bg' && legacySeeThrough(clip, type)) delete params.transparent;
+  return params;
+}
+
+/** Does any colour of the clip let what is below show through (its background, most often)? */
+export function seeThrough(clip: Clip, type: ClipType | undefined): boolean {
+  return !!type?.params.some((p) => p.kind === 'color' && p.transparent && colorValue(clip, type, p) === TRANSPARENT);
+}
+
+const num = (v: number) => String(Math.round(v * 1000) / 1000);
+const short = (t: string, n = 40) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+
+/** A param's value as words: an option's label, a media item's name, on / off, a colour. */
+function paramText(spec: ParamSpec, v: unknown, media: Map<string, MediaItem>): string {
+  switch (spec.kind) {
+    case 'bool':
+      return v ? 'on' : 'off';
+    case 'color':
+      return v === 'face' ? "the light's colour" : v === 'random' ? 'random' : v === TRANSPARENT ? 'transparent' : String(v);
+    case 'media':
+      // the same words as clipSummary, so the summary line is not repeated
+      return typeof v === 'string' && v ? media.get(v)?.name ?? 'Missing media' : 'No media chosen';
+    case 'select':
+    case 'font':
+      return spec.options?.find((o) => o.value === v)?.label ?? String(v);
+    case 'number':
+    case 'int':
+      return num(Number(v) || 0);
+    default:
+      return String(v ?? '').replace(/\s+/g, ' ').trim();
+  }
+}
+
+/**
+ * Everything worth knowing about a clip that its block may not have room for, one line each: what
+ * it is and shows, where and when it plays, and every setting that differs from the type's default
+ * (built from the type's ParamSpecs) plus opacity, fades and mask. `over`: it is a light's clip
+ * lying over a whole-sign clip.
+ */
+export function clipDetails(clip: Clip, type: ClipType | undefined, media: Map<string, MediaItem>, target: Target, over = false): string[] {
+  const summary = clipSummary(clip, type, media);
+  const out = [type ? (summary ? `${type.label}: ${summary}` : type.label) : `Unknown clip type “${clip.type}”`];
+  const where = target === 'audio' ? 'Audio track' : TARGET_NAMES[target];
+  out.push(`${where} · ${num(clip.start)}–${num(clipEnd(clip))} s (${num(clip.duration)} s)`);
+  if (over) out.push('Shown instead of the whole-sign clip in this light');
+  for (const spec of type?.params ?? []) {
+    const v = spec.kind === 'color' ? colorValue(clip, type, spec) : spec.key in clip.params ? clip.params[spec.key] : spec.default;
+    if (v === spec.default || (typeof v === 'number' && Number(spec.default) === v)) continue;
+    const text = paramText(spec, v, media);
+    // already said on the first line (the text, the media's name, the figure)
+    if (text === summary) continue;
+    out.push(`${spec.label}: ${short(text)}`);
+  }
+  if (clip.opacity !== 1) out.push(`${target === 'audio' ? 'Volume' : 'Opacity'}: ${Math.round(clip.opacity * 100)}%`);
+  if (clip.fade_in > 0) out.push(`Fade in: ${num(clip.fade_in)} s`);
+  if (clip.fade_out > 0) out.push(`Fade out: ${num(clip.fade_out)} s`);
+  if (clip.mask === false && target !== 'audio' && type?.masked !== false) out.push('Mask: none (fills the whole box)');
+  return out;
 }
 
 /** One choice of a clip type offered as its own palette item: the figure "Walking" of the type "Figure". */

@@ -109,7 +109,7 @@ export default function Palette() {
     <div className="palette">
       <input type="search" className="pal-search" placeholder="Search clips and media" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search the library" />
       <div className="pal-scroll">
-        <p className="pal-hint muted small">Drag onto a track, or click a track then an item. Whole-sign items cover all three lights.</p>
+        <p className="pal-hint muted small">Drag onto a track, or click a track then an item. Whole-sign items cover all three lights; a clip on one light shows over them there.</p>
         {groups.map((g) => (
           <section key={g.cat} className="pal-group">
             <h3>{CATEGORY_LABELS[g.cat] ?? g.cat}</h3>

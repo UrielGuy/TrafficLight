@@ -248,13 +248,14 @@ describe('set edits', () => {
 });
 
 describe('whole sign', () => {
-  // A: whole-sign clip 4..6; lights: top 0..2, mid 7..9; audio 0..10
+  // whole-sign clip W 4..6 (and W2 12..14 on a second whole-sign track); lights: top 0..2, mid 7..9; audio 0..10
   const base = () => mkSet([
     track('w', 'all', [clip('W', 4, 2, 'video')]),
     track('top', 'face0', [clip('T', 0, 2)]),
     track('mid', 'face1', [clip('M', 7, 2, 'video')]),
     track('bot', 'face2'),
     track('aud', 'audio', [clip('A', 0, 10, 'audio')]),
+    track('w2', 'all', [clip('W2', 12, 2, 'video')]),
   ]);
   const tr = (s: SetData, id: string) => s.tracks.find((t) => t.id === id)!;
 
@@ -262,47 +263,49 @@ describe('whole sign', () => {
     const mixed = [track('aud', 'audio'), track('w', 'all'), track('top', 'face0'), track('mid', 'face1')];
     expect(rowTracks(mixed).map((t) => t.id)).toEqual(['top', 'mid', 'aud']);
   });
-  it('a light lane is blocked by its own clips and the whole-sign clips', () => {
+  it('a light lane is blocked by its own clips only: it may lie over a whole-sign clip', () => {
     const s = base();
-    expect(blockers(s, tr(s, 'bot'))).toEqual([{ start: 4, end: 6 }]);
-    expect(blockers(s, tr(s, 'top'))).toEqual([{ start: 0, end: 2 }, { start: 4, end: 6 }]);
+    expect(blockers(s, tr(s, 'bot'))).toEqual([]);
+    expect(blockers(s, tr(s, 'top'))).toEqual([{ start: 0, end: 2 }]);
   });
-  it('the whole-sign lane is blocked by every light clip and the other whole-sign clips', () => {
+  it('the whole-sign lane is blocked by the whole-sign clips of every whole-sign track', () => {
     const s = base();
-    expect(blockers(s, tr(s, 'w'))).toEqual([{ start: 0, end: 2 }, { start: 4, end: 6 }, { start: 7, end: 9 }]);
+    expect(blockers(s, tr(s, 'w'))).toEqual([{ start: 4, end: 6 }, { start: 12, end: 14 }]);
+    expect(blockers(s, tr(s, 'w2'), new Set(['W2']))).toEqual([{ start: 4, end: 6 }]);
   });
   it('audio is not affected', () => {
     const s = base();
     expect(blockers(s, tr(s, 'aud'))).toEqual([{ start: 0, end: 10 }]);
   });
-  it('a new light clip is not dropped into a whole-sign clip', () => {
+  it('a new light clip may be dropped over a whole-sign clip', () => {
     const s = base();
-    expect(placeNew(s, tr(s, 'bot'), 4.2, 1)).toEqual({ start: 3, duration: 1 });
-    expect(placeNew(s, tr(s, 'bot'), 5.5, 1)).toEqual({ start: 6, duration: 1 });
-    expect(placeNew(s, tr(s, 'bot'), 3, 3)).toEqual({ start: 1, duration: 3 }); // slid back to fit the gap 0..4
-    expect(placeNew(s, tr(s, 'bot'), 3.5, 5)).toEqual({ start: 0, duration: 4 }); // shortened to the gap 0..4
+    expect(placeNew(s, tr(s, 'bot'), 4.2, 1)).toEqual({ start: 4.2, duration: 1 });
+    expect(placeNew(s, tr(s, 'mid'), 4.5, 1)).toEqual({ start: 4.5, duration: 1 });
   });
-  it('a new whole-sign clip goes where all lights are free', () => {
+  it('a new whole-sign clip may go behind light clips, not over another whole-sign clip', () => {
     const s = base();
-    expect(placeNew(s, tr(s, 'w'), 2.5, 3)).toEqual({ start: 2, duration: 2 });
-    expect(placeNew(s, tr(s, 'w'), 9.5, 3)).toEqual({ start: 9.5, duration: 3 });
-    expect(placeNew(s, tr(s, 'w'), 0.5, 1)).toEqual({ start: 2, duration: 1 });
+    expect(placeNew(s, tr(s, 'w'), 0.5, 1)).toEqual({ start: 0.5, duration: 1 });
+    expect(placeNew(s, tr(s, 'w'), 4.5, 1)).toEqual({ start: 6, duration: 1 });
+    expect(placeNew(s, tr(s, 'w'), 7, 6)).toEqual({ start: 6, duration: 6 }); // the gap 6..12 holds it
+    expect(placeNew(s, tr(s, 'w'), 13.5, 1)).toEqual({ start: 14, duration: 1 }); // W2 is on another whole-sign track
   });
-  it('a light clip cannot be moved or trimmed into a whole-sign clip', () => {
+  it('a light clip may be moved and trimmed over a whole-sign clip', () => {
     const s = base();
-    expect(planMove(s, ['T'], 3, 0, acc)).toEqual([{ id: 'T', toTrack: 'top', start: 2 }]);
-    expect(planMove(s, ['M'], -2, 0, acc)).toEqual([{ id: 'M', toTrack: 'mid', start: 6 }]);
-    // across rows too: from the top light to the bottom one, still not into 4..6
-    expect(planMove(s, ['T'], 4.2, 2, acc)).toEqual([{ id: 'T', toTrack: 'bot', start: 6 }]);
-    expect(trim(s, tr(s, 'top'), s.tracks[1].clips[0], 'end', 5)).toEqual({ start: 0, duration: 4 });
-    expect(trim(s, tr(s, 'mid'), s.tracks[2].clips[0], 'start', 5)).toEqual({ start: 6, duration: 3 });
+    expect(planMove(s, ['T'], 3, 0, acc)).toEqual([{ id: 'T', toTrack: 'top', start: 3 }]);
+    expect(planMove(s, ['T'], 4.2, 2, acc)).toEqual([{ id: 'T', toTrack: 'bot', start: 4.2 }]);
+    expect(trim(s, tr(s, 'top'), s.tracks[1].clips[0], 'end', 5)).toEqual({ start: 0, duration: 5 });
+    expect(trim(s, tr(s, 'mid'), s.tracks[2].clips[0], 'start', 5)).toEqual({ start: 5, duration: 4 });
+    // still not over a clip of its own row
+    expect(planMove(s, ['M'], 0, -1, acc)).toEqual([{ id: 'M', toTrack: 'top', start: 7 }]);
+    expect(planMove(s, ['M'], -6, -1, acc)).toEqual([{ id: 'M', toTrack: 'top', start: 2 }]);
   });
-  it('a whole-sign clip cannot be moved or trimmed over any light clip', () => {
+  it('a whole-sign clip may be moved and trimmed behind light clips, not over another whole-sign clip', () => {
     const s = base();
-    expect(planMove(s, ['W'], 2, 0, acc)).toEqual([{ id: 'W', toTrack: 'w', start: 5 }]);
-    expect(planMove(s, ['W'], -3, 0, acc)).toEqual([{ id: 'W', toTrack: 'w', start: 2 }]);
-    expect(trim(s, tr(s, 'w'), s.tracks[0].clips[0], 'end', 9)).toEqual({ start: 4, duration: 3 });
-    expect(trim(s, tr(s, 'w'), s.tracks[0].clips[0], 'start', 0)).toEqual({ start: 2, duration: 4 });
+    expect(planMove(s, ['W'], 3, 0, acc)).toEqual([{ id: 'W', toTrack: 'w', start: 7 }]);
+    expect(planMove(s, ['W'], -4, 0, acc)).toEqual([{ id: 'W', toTrack: 'w', start: 0 }]);
+    expect(planMove(s, ['W'], 7.5, 0, acc)).toEqual([{ id: 'W', toTrack: 'w', start: 10 }]); // butts up against W2
+    expect(trim(s, tr(s, 'w'), s.tracks[0].clips[0], 'end', 20)).toEqual({ start: 4, duration: 8 });
+    expect(trim(s, tr(s, 'w'), s.tracks[0].clips[0], 'start', 0)).toEqual({ start: 0, duration: 6 });
   });
   it('a whole-sign clip keeps its track when the rows change', () => {
     const s = base();
@@ -312,25 +315,23 @@ describe('whole sign', () => {
   });
   it('moves a whole-sign clip and light clips as one block', () => {
     const s = base();
-    // W 4..6 and T 0..2 by +2: W would hit M (7..9), so the block stops where W touches it
-    expect(planMove(s, ['W', 'T'], 2, 0, acc)).toEqual([{ id: 'W', toTrack: 'w', start: 5 }, { id: 'T', toTrack: 'top', start: 1 }]);
+    // W 4..6 and T 0..2 by +7: W would run into W2 (12..14), so the block stops where W touches it
+    expect(planMove(s, ['W', 'T'], 7, 0, acc)).toEqual([{ id: 'W', toTrack: 'w', start: 10 }, { id: 'T', toTrack: 'top', start: 6 }]);
   });
   it('rows count without the whole-sign track', () => {
     const s = base();
-    expect(planMove(s, ['M'], 0, -1, acc)).toEqual([{ id: 'M', toTrack: 'top', start: 7 }]);
     expect(planMove(s, ['M'], 0, 2, acc)![0].toTrack).toBe('bot'); // not onto audio
   });
   it('pastes and duplicates under the same rule', () => {
     const s = base();
-    const w = copyClips(s, ['W']);
-    expect(pasteClips(s, w, 0).set.tracks[0].clips.map((c) => c.start)).toEqual([2, 4]);
-    expect(pasteClips(s, copyClips(s, ['T']), 3.5).set.tracks[1].clips.map((c) => c.start)).toEqual([0, 6]);
-    expect(duplicateClips(s, ['W']).set.tracks[0].clips.map((c) => c.start)).toEqual([4, 9]);
+    expect(pasteClips(s, copyClips(s, ['W']), 5).set.tracks[0].clips.map((c) => c.start)).toEqual([4, 6]);
+    expect(pasteClips(s, copyClips(s, ['T']), 3.5).set.tracks[1].clips.map((c) => c.start)).toEqual([0, 3.5]);
+    expect(duplicateClips(s, ['W']).set.tracks[0].clips.map((c) => c.start)).toEqual([4, 6]);
   });
-  it('pasting a whole-sign clip into a set without a whole-sign track makes one, as the top layer', () => {
+  it('pasting a whole-sign clip into a set without a whole-sign track makes one', () => {
     const s = base();
     const items = copyClips(s, ['W']);
-    const bare = mkSet(s.tracks.slice(1).map((t) => ({ ...t, clips: [] })));
+    const bare = mkSet(s.tracks.slice(1, 5).map((t) => ({ ...t, clips: [] })));
     const r = pasteClips(bare, items, 1);
     expect(r.set.tracks[0].target).toBe('all');
     expect(r.set.tracks[0].clips.map((c) => [c.start, c.duration])).toEqual([[1, 2]]);
@@ -346,45 +347,39 @@ describe('whole sign', () => {
     expect(wholeTrack(r.set).track).toBe(r.track);
     expect(wholeTrack(base()).set).toEqual(base());
   });
-  it('turns a light clip into a whole-sign clip and back', () => {
-    const s = mkSet([track('top', 'face0', [clip('T', 0, 2)]), track('mid', 'face1', [clip('M', 3, 1)])]);
+  it('turns a light clip into a whole-sign clip and back, over other light clips too', () => {
+    const s = mkSet([track('top', 'face0', [clip('T', 0, 2)]), track('mid', 'face1', [clip('M', 1, 1)])]);
     const r = toWhole(s, 'T');
     if (!('set' in r)) throw new Error(r.error);
     expect(r.set.tracks[0].target).toBe('all');
     expect(r.set.tracks[0].clips.map((c) => [c.id, c.start, c.duration])).toEqual([['T', 0, 2]]);
+    // back: the middle light is taken then, so the preferred row is skipped
     const back = toLight(r.set, 'T', 'mid');
     if (!('set' in back)) throw new Error(back.error);
-    expect(back.set.tracks.find((t) => t.id === 'mid')!.clips.map((c) => c.id)).toEqual(['T', 'M']);
-    // without a preference: the top light
-    const top = toLight(r.set, 'T');
-    expect('set' in top && top.set.tracks.find((t) => t.id === 'top')!.clips.map((c) => c.id)).toEqual(['T']);
+    expect(back.set.tracks.find((t) => t.id === 'top')!.clips.map((c) => c.id)).toEqual(['T']);
+    const back2 = toLight({ ...r.set, tracks: r.set.tracks.map((t) => (t.id === 'mid' ? { ...t, clips: [] } : t)) }, 'T', 'mid');
+    expect('set' in back2 && back2.set.tracks.find((t) => t.id === 'mid')!.clips.map((c) => c.id)).toEqual(['T']);
   });
-  it('refuses to make it whole-sign over other light clips', () => {
-    const s = mkSet([track('top', 'face0', [clip('T', 0, 2)]), track('mid', 'face1', [clip('M', 1, 2)])]);
+  it('refuses to make it whole-sign over another whole-sign clip', () => {
+    const s = mkSet([track('w', 'all', [clip('W', 1, 3)]), track('top', 'face0', [clip('T', 0, 2)])]);
     expect(toWhole(s, 'T')).toHaveProperty('error');
   });
-  it('turning back skips a light that is not free and refuses when none is', () => {
-    // older data: light clips under the whole-sign one
+  it('refuses to put it on a light when every light row is taken then', () => {
     const s = mkSet([
       track('w', 'all', [clip('W', 0, 4, 'video')]),
       track('top', 'face0', [clip('T', 1, 1)]),
-      track('mid', 'face1'),
+      track('mid', 'face1', [clip('M', 3, 2)]),
     ]);
-    const r = toLight(s, 'W', 'top');
-    expect('set' in r && r.set.tracks[2].clips.map((c) => c.id)).toEqual(['W']);
-    const full = mkSet([s.tracks[0], s.tracks[1], track('mid', 'face1', [clip('M', 3, 2)])]);
-    expect(toLight(full, 'W')).toHaveProperty('error');
+    expect(toLight(s, 'W')).toHaveProperty('error');
   });
   it('older data that breaks the rule: what is moved next must fit, the rest stays', () => {
     const s = mkSet([
-      track('w', 'all', [clip('W', 0, 4, 'video')]),
+      track('w', 'all', [clip('W', 0, 4, 'video'), clip('V', 2, 4, 'video')]),
       track('top', 'face0', [clip('T', 1, 1)]),
-      track('mid', 'face1', [clip('M', 2, 1)]),
     ]);
-    const out = applyMoves(s, planMove(s, ['T'], 0.5, 0, acc)!);
-    expect(out.tracks[1].clips[0].start).toBe(4);
-    expect(out.tracks[0].clips[0].start).toBe(0);
-    expect(out.tracks[2].clips[0].start).toBe(2);
+    const out = applyMoves(s, planMove(s, ['V'], 0.5, 0, acc)!);
+    expect(out.tracks[0].clips.map((c) => [c.id, c.start])).toEqual([['W', 0], ['V', 4]]);
+    expect(out.tracks[1].clips[0].start).toBe(1);
   });
   it('drops a mute stored on a whole-sign track', () => {
     const s = mkSet([{ ...track('w', 'all'), muted: true }, { ...track('top', 'face0'), muted: true }]);

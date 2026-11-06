@@ -149,6 +149,8 @@ export interface ParamSpec {
   options?: ParamOption[];
   media_kind?: MediaKind;
   help?: string;
+  /** kind "color": the value may also be "transparent" (nothing drawn in it; what is below shows). */
+  transparent?: boolean;
 }
 export interface ClipType {
   type: string;
@@ -158,6 +160,8 @@ export interface ClipType {
   default_duration: number;
   description: string;
   params: ParamSpec[];
+  /** False: the type always fills its whole box, whatever Clip.mask says (Off), so there is no mask to choose. */
+  masked?: boolean;
 }
 export interface Catalog {
   clip_types: ClipType[];

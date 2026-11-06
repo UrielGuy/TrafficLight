@@ -39,7 +39,7 @@ def _dir(deg: float) -> tuple[float, float]:
     return math.sin(a), -math.cos(a)
 
 
-def draw_watch(img: np.ndarray, w: int, h: int, base: c.colors.RGB, ink: c.colors.RGB,
+def draw_watch(img: np.ndarray, w: int, h: int, base, ink: c.colors.RGB,
                hour_deg: float, minute_deg: float, second_deg: Optional[float] = None,
                second_color: Optional[c.colors.RGB] = None) -> None:
     g = c.grid(w, h)
@@ -50,7 +50,7 @@ def draw_watch(img: np.ndarray, w: int, h: int, base: c.colors.RGB, ink: c.color
         c.paint(img, c.cov(c.capsule_sd(g.x, g.yb, 0.0, 0.0, dx * length * U, dy * length * U, w0 * U, w1 * U)), ink)
     # Hub with a pin in the face colour; the second hand runs over it.
     c.paint(img, c.cov(g.d - 14.0 * U), ink)
-    c.paint(img, c.cov(g.d - 4.0 * U), base)
+    c.paint(img, c.cov(g.d - 4.0 * U), base)      # a transparent base punches the pin out
     if second_deg is not None:
         sc = second_color or ink
         dx, dy = _dir(second_deg)
@@ -92,7 +92,8 @@ class WallClock(c.Fx):
     category = "basic"
     description = "A watch face showing the real local time, with an optional second hand."
     params = [
-        c.color_param("color", "Colour", "face"),
+        c.color_param("color", "Colour", "face", "Transparent: only the ink is drawn, over what is below.",
+                      transparent=True),
         c.color_param("ink", "Ink", "#000000"),
         c.color_param("second_color", "Second hand", "#000000"),
         ParamSpec("seconds", "Second hand", "bool", True),
@@ -103,8 +104,9 @@ class WallClock(c.Fx):
     def render(self, ctx: RenderContext) -> np.ndarray:
         w, h = c.box(ctx)
         base = self.col(ctx, "color", fallback=ctx.face_color)
-        ink = self.col(ctx, "ink", avoid=base, fallback=c.BLACK)
-        if ink == base:
+        clear = c.is_clear(base)
+        ink = self.col(ctx, "ink", avoid=None if clear else base, fallback=c.BLACK)
+        if not clear and ink == base:
             ink = c.WHITE if base == c.BLACK else c.BLACK
         t = ctx.wall_time if isinstance(ctx.wall_time, _dt.datetime) else _dt.datetime(2000, 1, 1, 10, 10, 30)
         sec = t.second + (t.microsecond / 1e6 if self.flag("smooth") else 0.0)

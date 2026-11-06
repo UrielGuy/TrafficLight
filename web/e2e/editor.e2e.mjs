@@ -230,6 +230,14 @@ try {
   await page.waitForTimeout(400);
   await page.locator('[data-testid=snap]').getAttribute('aria-pressed').then((v) => v === 'false' && page.click('[data-testid=snap]'));
 
+  section('palette');
+  {
+    const heads = await page.locator('.pal-group h3').allTextContents();
+    check(!heads.includes('Text') && heads[0] === 'Basic', `no Text section; Basic first (${heads.join(', ')})`);
+    const basic = await page.locator('.pal-group').first().locator('.pal-chip').evaluateAll((els) => els.map((e) => e.dataset.type));
+    check(JSON.stringify(basic) === JSON.stringify(['light', 'off', 'text', 'clock']), `Basic: Light, Off, Text, Clock (${basic.join(', ')})`);
+  }
+
   section('palette drops');
   await h.drag(await h.item('.pal-chip[data-type="text"]'), await h.at(ROW.top, 1.05));
   let cs = await h.clips();
@@ -663,13 +671,19 @@ try {
     const D = signVideo.duration;
     const blocks = async () => (await hh.clips()).filter((x) => x.row === 'whole').sort((a, b) => a.start - b.start);
     const overlaps = (a, b) => a.start < b.start + b.dur - 1e-3 && b.start < a.start + a.dur - 1e-3;
-    /** Light clips that overlap a whole-sign block (should be none after any edit). */
+    /** Overlaps that are not allowed: two whole-sign clips, or two clips of one row (should be none after any edit). */
     const clashes = async () => {
       const cs = await hh.clips();
-      const ws = cs.filter((x) => x.row === 'whole');
-      return cs.filter((x) => x.row !== 'whole' && x.row !== 3 && ws.some((w) => overlaps(w, x))).length
-        + ws.filter((w, i) => ws.some((v, j) => j !== i && overlaps(w, v))).length;
+      return cs.filter((a, i) => cs.some((b, j) => j !== i && a.row === b.row && overlaps(a, b))).length;
     };
+    /** A point on the block in row `row`, in the middle of its time. */
+    const blockAt = async (id, row) => {
+      const b = await p.locator(`[data-clip="${id}"]`).boundingBox();
+      const L = await hh.lanes();
+      return { x: b.x + b.width / 2, y: (L[row].top + L[row].bottom) / 2 };
+    };
+    /** Is the clip `id` what the pointer hits at (x, y)? */
+    const topAt = (x, y, id) => p.evaluate(([xx, yy, i]) => document.elementFromPoint(xx, yy)?.closest('[data-clip]')?.dataset.clip === i, [x, y, id]);
     /** Does the block's box cover exactly the three light rows? */
     const spansLights = async (id, sel = `[data-clip="${id}"]`) => {
       const b = await p.locator(sel).first().boundingBox();
@@ -701,12 +715,38 @@ try {
     check(w1?.thumb, 'it shows a thumbnail strip');
     check((await p.locator('.insp-title').textContent()) === 'Video' && (await p.locator('.insp-track').textContent()).includes('Whole sign'), 'the inspector shows it as a whole-sign video');
 
-    // a light clip dropped into its time goes beside it
-    await hh.drag(await hh.item('.pal-chip[data-type="text"]'), await hh.at(0, 3));
+    // a light clip dropped into the block's time lies over it, in that light only
+    await hh.drag(await hh.item('.pal-chip[data-type="text"]'), await hh.at(0, 2.5));
     let cs = await hh.clips();
     const txt = cs.find((x) => x.type === 'text');
-    check(txt && txt.row === 0 && near(txt.start, w1.start + w1.dur, 0.01), `a text dropped inside the block's time goes right after it (${txt?.start.toFixed(2)})`);
-    check((await clashes()) === 0, 'no light clip overlaps a whole-sign block');
+    check(txt && txt.row === 0 && near(txt.start, 2.5, 0.01), `a text dropped inside the block's time stays there, over the block (${txt?.start.toFixed(2)})`);
+    check(await p.locator(`[data-clip="${txt.id}"]`).evaluate((el) => el.classList.contains('over')), 'it is marked as overriding the block');
+    check(await topAt(...Object.values(await hh.clipCenter(txt.id)), txt.id), 'it is drawn on top of the block');
+    check(await topAt(...Object.values(await blockAt(w1.id, 2)), w1.id), 'the block is still under the pointer in the other rows');
+    // an Off clip on the middle light over part of the block
+    await hh.drag(await hh.item('.pal-chip[data-type="off"]'), await hh.at(1, 2));
+    cs = await hh.clips();
+    const off = cs.find((x) => x.type === 'off');
+    check(off && off.row === 1 && near(off.start, 2, 0.01), `an Off clip on the middle light, over the block (${off?.start})`);
+    {
+      const look = await p.locator(`[data-clip="${off.id}"]`).evaluate((el) => {
+        const bg = getComputedStyle(el).backgroundColor.match(/\d+/g).map(Number);
+        return { label: el.querySelector('.clip-type').innerText, lum: (bg[0] + bg[1] + bg[2]) / 3 };
+      });
+      check(look.label === 'OFF' && look.lum < 15, `it reads "OFF" and is dark (${look.label}, background ${look.lum.toFixed(0)})`);
+    }
+    await p.keyboard.press('Escape');
+    await p.screenshot({ path: `${SHOTS}/whole-2-over.png` });
+    // pointing: the text, then the block from a row where nothing covers it
+    await p.mouse.click(...Object.values(await hh.clipCenter(txt.id)));
+    check((await p.locator('.insp-title').textContent()) === 'Text', 'clicking the clip over the block selects that clip');
+    await p.mouse.click(...Object.values(await blockAt(w1.id, 2)));
+    check((await p.locator('.insp-title').textContent()) === 'Video' && (await hh.clips()).find((x) => x.id === w1.id).sel, 'clicking the block where it is not covered selects the block');
+    await p.screenshot({ path: `${SHOTS}/whole-3-block-selected.png` });
+    await p.mouse.click(...Object.values(await hh.clipCenter(off.id)));
+    await p.screenshot({ path: `${SHOTS}/whole-3b-off-selected.png` });
+    await p.keyboard.press('Delete');
+    check(!(await hh.clips()).some((x) => x.id === off.id), 'the Off clip goes with Delete, the block stays');
 
     // tap an empty spot on the bottom light, then the item: a block there
     await p.mouse.click(...Object.values(await hh.at(2, 16.02)));
@@ -714,29 +754,46 @@ try {
     ws = await blocks();
     const w2 = ws.find((x) => x.id !== w1.id);
     check(ws.length === 2 && w2 && near(w2.start, 16) && (await spansLights(w2.id)), `click a row, click the item: a second block at 16 s (${w2?.start})`);
-    await p.screenshot({ path: `${SHOTS}/whole-2-blocks.png` });
 
-    // moving the second block onto the text stops at the text
-    await hh.drag(await hh.clipCenter(w2.id), { x: (await hh.clipCenter(w2.id)).x - 5.5 * (await hh.geom()).pps, y: (await hh.clipCenter(w2.id)).y });
+    // a block dragged onto another block butts up against it; it may go behind the text
+    await hh.drag(await blockAt(w2.id, 2), { x: (await blockAt(w2.id, 2)).x - 12 * (await hh.geom()).pps, y: (await blockAt(w2.id, 2)).y });
     let w2m = (await blocks()).find((x) => x.id === w2.id);
-    check(near(w2m.start, txt.start + txt.dur, 0.01), `a block dragged onto a light clip butts up against it (${w2m.start.toFixed(2)})`);
+    check(near(w2m.start, w1.start + w1.dur, 0.01), `a block dragged onto another block butts up against it (${w2m.start.toFixed(2)}), behind the text`);
+    // dragged from a part not covered, back to the right
+    await hh.drag(await blockAt(w2.id, 2), { x: (await blockAt(w2.id, 2)).x + 6 * (await hh.geom()).pps, y: (await blockAt(w2.id, 2)).y });
+    const w2r = (await blocks()).find((x) => x.id === w2.id);
+    check(w2r.start > w2m.start + 5, `the block is moved by dragging it where nothing covers it (${w2m.start.toFixed(2)} -> ${w2r.start.toFixed(2)})`);
     // dragging it up and down does not change it
-    await hh.drag(await hh.clipCenter(w2.id), { x: (await hh.clipCenter(w2.id)).x, y: (await hh.at(3, 0)).y });
-    check(near((await blocks()).find((x) => x.id === w2.id).start, w2m.start) && (await spansLights(w2.id)), 'dragging it down stays a whole-sign block');
+    await hh.drag(await blockAt(w2.id, 2), { x: (await blockAt(w2.id, 2)).x, y: (await hh.at(3, 0)).y });
+    check(near((await blocks()).find((x) => x.id === w2.id).start, w2r.start) && (await spansLights(w2.id)), 'dragging it down stays a whole-sign block');
 
-    // trims stop at the neighbours
-    await hh.drag(await hh.clipEdge(w1.id, 'end'), await hh.at(1, w1.start + w1.dur + 2));
-    check(near((await blocks()).find((x) => x.id === w1.id).dur, w1.dur, 0.01), 'trimming the block\'s end into the text stops at the text');
-    await hh.drag(await hh.clipEdge(txt.id, 'start'), await hh.at(0, 4));
+    // trims: over light clips freely, not into another block
+    {
+      const e = await hh.clipEdge(w1.id, 'end');
+      const L = await hh.lanes();
+      await hh.drag({ x: e.x, y: (L[2].top + L[2].bottom) / 2 }, await hh.at(2, w1.start + w1.dur + 2));
+      const t1 = (await blocks()).find((x) => x.id === w1.id);
+      check(near(t1.start + t1.dur, w1.start + w1.dur + 2, 0.3), `the block's end trims out behind the text (${(t1.start + t1.dur).toFixed(2)})`);
+      await hh.drag({ x: (await hh.clipEdge(w1.id, 'end')).x, y: (L[2].top + L[2].bottom) / 2 }, await hh.at(2, w2r.start + 3));
+      const t2 = (await blocks()).find((x) => x.id === w1.id);
+      check(near(t2.start + t2.dur, w2r.start, 0.01), `and stops at the next block (${(t2.start + t2.dur).toFixed(2)})`);
+      await p.keyboard.press('Control+z');
+      await p.keyboard.press('Control+z');
+    }
+    await hh.drag(await hh.clipEdge(txt.id, 'start'), await hh.at(0, 2));
     cs = await hh.clips();
-    check(near(cs.find((x) => x.id === txt.id).start, txt.start, 0.01), 'trimming the text\'s start into the block stops at the block');
+    check(near(cs.find((x) => x.id === txt.id).start, 2, 0.01), 'the text\'s start trims into the block\'s time');
     await hh.drag(await hh.clipCenter(txt.id), await hh.at(2, 3));
     cs = await hh.clips();
-    check((await clashes()) === 0 && cs.find((x) => x.id === txt.id).row === 2, 'moving the text to the bottom light inside the block\'s time puts it outside that time');
+    const moved = cs.find((x) => x.id === txt.id);
+    check(moved.row === 2 && overlaps(moved, w1), `the text moves to the bottom light, still over the block (${moved.start.toFixed(2)})`);
     await p.keyboard.press('Control+z');
-    check(near((await hh.clips()).find((x) => x.id === txt.id).start, txt.start, 0.01) && (await hh.clips()).find((x) => x.id === txt.id).row === 0, 'undo puts it back');
+    check(near((await hh.clips()).find((x) => x.id === txt.id).start, 2, 0.01) && (await hh.clips()).find((x) => x.id === txt.id).row === 0, 'undo puts it back');
+    await p.keyboard.press('Control+z');
+    check(near((await hh.clips()).find((x) => x.id === txt.id).start, txt.start, 0.01), 'and undoes the trim');
     await p.keyboard.press('Control+Shift+z');
     await p.keyboard.press('Control+z');
+    check((await clashes()) === 0, 'no two whole-sign clips overlap, nor two clips of one row');
 
     // the inspector switch: a light clip becomes a whole-sign clip and back
     await hh.drag(await hh.item('.pal-chip[data-type="light"]'), await hh.at(1, 26));
@@ -752,34 +809,67 @@ try {
     await p.keyboard.press('Control+z');
     check((await hh.clips()).find((x) => x.id === lc.id).row === 'whole', 'undo: whole sign again');
     await p.keyboard.press('Control+Shift+z');
-    // refused: another light clip in the way
+    // allowed now: another light's clip at that time stays over it
     await hh.drag(await hh.item('.pal-chip[data-type="text"]'), await hh.at(2, lc.start + 0.5));
+    const other = (await hh.clips()).find((x) => x.type === 'text' && x.row === 2);
     await p.mouse.click(...Object.values(await hh.clipCenter(lc.id)));
     await p.click('[data-testid=shows-on] button:has-text("Whole sign")');
+    check((await hh.clips()).find((x) => x.id === lc.id).row === 'whole' && (await hh.clips()).find((x) => x.id === other.id).row === 2,
+      'a light clip with another light\'s clip at the same time turns into a block behind it');
+    // refused: another whole-sign clip at that time
+    await hh.drag(await hh.item('.pal-chip[data-type="light"]'), await hh.at(2, w2r.start + 1));
+    const lc2 = (await hh.clips()).find((x) => x.type === 'light' && x.row === 2);
+    await p.click('[data-testid=shows-on] button:has-text("Whole sign")');
     const toast = await hh.waitFor(async () => (await p.locator('.toast').allTextContents()).join(' | '), 1500);
-    check((await hh.clips()).find((x) => x.id === lc.id).row === 1 && /in the way|move them/.test(toast), `refused while another light clip plays then, and says why ("${toast}")`);
-    await p.screenshot({ path: `${SHOTS}/whole-3-refused.png` });
-    await p.keyboard.press('Control+z'); // the second text goes
+    check(lc2 && (await hh.clips()).find((x) => x.id === lc2.id).row === 2 && /Another whole-sign clip/.test(toast), `refused while another whole-sign clip plays then, and says why ("${toast}")`);
+    await p.screenshot({ path: `${SHOTS}/whole-4-refused.png` });
+    await p.keyboard.press('Control+z'); // lc2 goes
+    await p.keyboard.press('Control+z'); // lc back on its light
+    await p.keyboard.press('Control+z'); // the bottom text goes
+
+    // tooltips and the two-line labels
+    {
+      await hh.drag(await hh.item('.pal-chip[data-type="figure"]'), await hh.at(2, 23));
+      const fig = (await hh.clips()).find((x) => x.type === 'figure');
+      const figLabel = await p.locator('.pal-chip[data-type="figure"]').first().locator('.pal-chip-label').textContent();
+      const title = await p.locator(`[data-clip="${fig.id}"]`).getAttribute('title');
+      check(title.startsWith(`Figure: ${figLabel}\nBottom light · 23–`), `a figure's tooltip says what, where and when ("${title.replace(/\n/g, ' / ')}")`);
+      check((await p.locator(`[data-clip="${fig.id}"]`).getAttribute('aria-label')) === `Figure: ${figLabel}`, 'and its name is there for screen readers');
+      // trimmed narrow: the second line is still there, under the first, cut with an ellipsis
+      await hh.drag(await hh.clipEdge(fig.id, 'end'), await hh.at(2, 23.9), { shift: true });
+      const lines = await p.locator(`[data-clip="${fig.id}"]`).evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const a = el.querySelector('.clip-type').getBoundingClientRect();
+        const s = el.querySelector('.clip-sum');
+        const b = s.getBoundingClientRect();
+        return { w: r.width, text: s.textContent, under: b.top >= a.bottom - 1, inside: b.bottom <= r.bottom + 0.5 && b.width > 8, cut: s.scrollWidth > s.clientWidth, ellipsis: getComputedStyle(s).textOverflow };
+      });
+      check(lines.text === figLabel && lines.under && lines.inside && lines.ellipsis === 'ellipsis',
+        `a narrow clip (${lines.w.toFixed(0)} px) shows its second line "${lines.text}" under the type${lines.cut ? ', cut with an ellipsis' : ''}`);
+      await p.screenshot({ path: `${SHOTS}/whole-5-narrow.png`, clip: { x: 0, y: 560, width: 1600, height: 250 } });
+      await p.keyboard.press('Delete');
+    }
+    await p.keyboard.press('Escape');
 
     // group: the first block and the text, moved together; the text changes row, the block stays a block
-    await p.mouse.click(...Object.values(await hh.clipCenter(w1.id)));
+    await p.mouse.click(...Object.values(await blockAt(w1.id, 2)));
     await p.keyboard.down('Shift');
     await p.mouse.click(...Object.values(await hh.clipCenter(txt.id)));
     await p.keyboard.up('Shift');
     const g0 = (await hh.clips()).filter((x) => x.id === w1.id || x.id === txt.id);
     {
-      const from = await hh.clipCenter(w1.id);
+      const from = await blockAt(w1.id, 1);
       const L = await hh.lanes();
       const pps = (await hh.geom()).pps;
       // pointer goes down on the middle row and ends one row lower, half a second earlier
-      await hh.drag({ x: from.x, y: (L[1].top + L[1].bottom) / 2 }, { x: from.x - 0.52 * pps, y: (L[2].top + L[2].bottom) / 2 });
+      await hh.drag(from, { x: from.x - 0.52 * pps, y: (L[2].top + L[2].bottom) / 2 });
     }
     const g1 = (await hh.clips()).filter((x) => x.id === w1.id || x.id === txt.id);
     const dW = g1.find((x) => x.id === w1.id).start - g0.find((x) => x.id === w1.id).start;
     const dT = g1.find((x) => x.id === txt.id).start - g0.find((x) => x.id === txt.id).start;
     check(near(dW, -0.5, 0.01) && near(dT, dW, 0.001), `the group moves as one (${dW.toFixed(2)} s, ${dT.toFixed(2)} s)`);
     check(g1.find((x) => x.id === w1.id).row === 'whole' && g1.find((x) => x.id === txt.id).row === 1, 'the text went one row down, the block stays over the lights');
-    await p.screenshot({ path: `${SHOTS}/whole-4-group.png` });
+    await p.screenshot({ path: `${SHOTS}/whole-6-group.png` });
     await p.keyboard.press('Control+z');
     const g2 = (await hh.clips()).filter((x) => x.id === w1.id || x.id === txt.id);
     check(g2.every((x) => { const o = g0.find((y) => y.id === x.id); return near(x.start, o.start) && x.row === o.row; }), 'undo restores both');
@@ -791,20 +881,21 @@ try {
     // split, copy, paste, delete
     {
       const b = (await blocks()).find((x) => x.id === w1.id);
-      await p.mouse.click(...Object.values(await hh.clipCenter(w1.id)));
+      await p.mouse.click(...Object.values(await blockAt(w1.id, 2)));
       await hh.drag(await hh.rulerAt(b.start + 2), await hh.rulerAt(b.start + 2));
       await p.keyboard.press('s');
       const parts = (await blocks()).filter((x) => x.start >= b.start - 1e-3 && x.start < b.start + b.dur);
       check(parts.length === 2 && near(parts[1].start, b.start + 2, 0.02) && (await spansLights(parts[1].id)), 'S splits the block in two blocks');
-      await p.mouse.click(...Object.values(await hh.clipCenter(parts[1].id)));
+      await p.mouse.click(...Object.values(await blockAt(parts[1].id, 2)));
+      const n = (await blocks()).length;
       await p.keyboard.press('Control+c');
       await p.keyboard.press('Control+v');
       const after = await blocks();
-      check(after.length === 4 && (await clashes()) === 0, `Ctrl+V pastes a block where the lights are free (${after.map((x) => x.start.toFixed(2)).join(', ')})`);
+      check(after.length === n + 1 && (await clashes()) === 0, `Ctrl+V pastes a block where no other block is (${after.map((x) => x.start.toFixed(2)).join(', ')})`);
       await p.keyboard.press('Control+d');
-      check((await blocks()).length === 5 && (await clashes()) === 0, 'Ctrl+D duplicates it, also without overlap');
+      check((await blocks()).length === n + 2 && (await clashes()) === 0, 'Ctrl+D duplicates it, also without overlap');
       await p.keyboard.press('Delete');
-      check((await blocks()).length === 4, 'Delete removes a block');
+      check((await blocks()).length === n + 1, 'Delete removes a block');
     }
     await p.keyboard.press('Escape');
     await p.screenshot({ path: `${SHOTS}/whole-5-edited.png` });
@@ -821,10 +912,11 @@ try {
     await p.waitForTimeout(300);
     const afterLoad = (await hh.clips()).map((x) => `${x.id}:${x.row}:${x.start.toFixed(3)}:${x.dur.toFixed(3)}`).sort();
     check(JSON.stringify(before) === JSON.stringify(afterLoad), 'after a reload every clip is where it was');
-    await p.screenshot({ path: `${SHOTS}/whole-6-reloaded.png` });
+    await p.screenshot({ path: `${SHOTS}/whole-7-reloaded.png` });
 
     // the server's picture: the video on all three lights
     {
+      // early in the first block, before the text (now on the middle light, overriding it) starts
       const b = (await blocks())[0];
       const t = b.start + 1;
       const thirds = await p.evaluate(async ([id, tt]) => {
@@ -848,7 +940,7 @@ try {
     // the inspector's picture is what the sign shows: whole sign (three circles), then one light
     {
       const b = (await blocks())[0];
-      await p.mouse.click(...Object.values(await hh.clipCenter(b.id)));
+      await p.mouse.click(...Object.values(await blockAt(b.id, 2)));
       await p.waitForSelector('[data-testid=clip-picture][data-loaded="1"]');
       const shown = await p.evaluate(() => {
         const cv = document.querySelector('[data-testid=clip-picture]');
@@ -910,7 +1002,7 @@ try {
     await c.close();
     await api(`/api/sets/${wset.id}`, { method: 'DELETE' });
 
-    section('a hand-made set that breaks the rule opens and plays');
+    section('a hand-made set with overlapping whole-sign clips opens and plays');
     {
       const bad = await api('/api/sets', { method: 'POST', body: JSON.stringify({ name: 'E2E overlap', bpm: 120, duration: 10, tracks: [
         { name: 'Whole sign', target: 'all', muted: true, clips: [{ type: 'video', start: 0, duration: 6, params: { media: signVideo.id } }] },
@@ -918,6 +1010,7 @@ try {
         { name: 'Audio', target: 'audio', clips: [] },
         { name: 'Middle', target: 'face1', clips: [{ type: 'fx:pulse', start: 2, duration: 3 }] },
         { name: 'Bottom', target: 'face2', clips: [{ type: 'light', start: 0, duration: 7 }] },
+        { name: 'Whole sign 2', target: 'all', clips: [{ type: 'light', start: 4, duration: 4 }] },
       ] }) });
       const c2 = await browser.newContext({ viewport: { width: 1600, height: 900 } });
       const p2 = await c2.newPage();
@@ -932,14 +1025,12 @@ try {
       const names = await p2.locator('.tl-name').allTextContents();
       check(JSON.stringify(names) === JSON.stringify(['Top', 'Middle', 'Bottom', 'Audio']), `the lights are shown above the audio row (${names.join(', ')})`);
       let cs2 = await h2.clips();
-      const W = cs2.find((x) => x.row === 'whole');
-      check(cs2.length === 4 && W && W.dim, 'every clip is drawn; the block of the muted whole-sign track is dimmed');
-      const onTop = await p2.evaluate(() => {
-        const w = document.querySelector('[data-whole]');
-        const r = w.getBoundingClientRect();
-        return document.elementFromPoint(r.left + r.width * 0.3, r.top + r.height * 0.15)?.closest('[data-clip]') === w;
-      });
-      check(onTop, 'the whole-sign block is drawn on top of the light clips under it');
+      const W = cs2.find((x) => x.row === 'whole' && x.type === 'video');
+      const V = cs2.find((x) => x.row === 'whole' && x.type === 'light');
+      check(cs2.length === 5 && W && V && W.dim && !V.dim, 'every clip is drawn; the block of the muted whole-sign track is dimmed');
+      const T = cs2.find((x) => x.type === 'text');
+      const tc = await h2.clipCenter(T.id);
+      check(await p2.evaluate(([x, y, id]) => document.elementFromPoint(x, y)?.closest('[data-clip]')?.dataset.clip === id, [tc.x, tc.y, T.id]), 'the light clips are drawn over the blocks');
       check(!(await p2.locator('[data-testid=dirty]').count()), 'opening it changes nothing');
       await p2.screenshot({ path: `${SHOTS}/whole-11-overlap.png` });
       const f0 = await h2.frameHash();
@@ -948,23 +1039,136 @@ try {
       await p2.click('[data-testid=play]');
       const tp = await h2.time();
       check(tp > 0.7 && (await h2.frameHash()) !== f0, `it plays (${tp.toFixed(2)} s)`);
-      // nowhere to put it on one light: refused
-      await p2.mouse.click(...Object.values(await h2.clipCenter(W.id, 0.9)));
+      // every light row has a clip during it: refused
+      const L = await h2.lanes();
+      const wb = await p2.locator(`[data-clip="${W.id}"]`).boundingBox();
+      await p2.mouse.click(wb.x + 4, (L[1].top + L[1].bottom) / 2);
       await p2.click('[data-testid=shows-on] button:has-text("One light")');
       const toast = await h2.waitFor(async () => (await p2.locator('.toast').allTextContents()).join(' | '), 1500);
-      check((await h2.clips()).find((x) => x.id === W.id).row === 'whole' && /No light is free/.test(toast), `turning it into a light clip is refused when no light is free ("${toast}")`);
-      // the first edit: the moved clip must fit, the mute of the hidden track goes
-      const T = cs2.find((x) => x.type === 'text');
+      check((await h2.clips()).find((x) => x.id === W.id).row === 'whole' && /Every light has another clip/.test(toast), `turning it into a light clip is refused when every light is taken then ("${toast}")`);
+      // the first edit: the moved block must fit (no overlap with the other block); the mute of the hidden track goes
       await p2.keyboard.press('Escape');
-      await p2.evaluate(() => document.querySelector('[data-whole]').style.pointerEvents = 'none');
-      await h2.drag(await h2.clipCenter(T.id), await h2.clipCenter(T.id).then((q) => ({ x: q.x + 10, y: q.y })));
-      await p2.evaluate(() => document.querySelector('[data-whole]').style.pointerEvents = '');
+      const vb = await p2.locator(`[data-clip="${V.id}"]`).boundingBox();
+      const from = { x: vb.x + vb.width - 10, y: (L[0].top + L[0].bottom) / 2 };
+      await h2.drag(from, { x: from.x + 10, y: from.y }, { shift: true });
       cs2 = await h2.clips();
-      const T2 = cs2.find((x) => x.id === T.id);
-      check(T2.start >= 6 - 1e-3 && !cs2.find((x) => x.id === W.id).dim, `the next move puts the text outside the block (${T2.start.toFixed(2)}) and the block plays again`);
-      check(cs2.find((x) => x.type === 'fx:pulse').start === 2, 'what was not moved stays where it was');
+      const V2 = cs2.find((x) => x.id === V.id);
+      check(V2.start >= 6 - 1e-3 && !cs2.find((x) => x.id === W.id).dim, `the next move puts the second block after the first (${V2.start.toFixed(2)}) and the first plays again`);
+      check(cs2.find((x) => x.type === 'fx:pulse').start === 2 && cs2.find((x) => x.id === T.id).start === 1, 'what was not moved stays where it was');
       await c2.close();
       await api(`/api/sets/${bad.id}`, { method: 'DELETE' });
+    }
+
+    section('the sign: a light\'s clip overrides the whole-sign video in that light');
+    {
+      const mk = (name, lights) => api('/api/sets', { method: 'POST', body: JSON.stringify({ name, duration: 10, tracks: [
+        { name: 'Whole sign', target: 'all', clips: [{ type: 'video', start: 0, duration: 8, params: { media: signVideo.id, loop: true } }] },
+        ...lights,
+      ] }) });
+      const plain = await mk('E2E plain', []);
+      const over = await mk('E2E override', [
+        { name: 'Top', target: 'face0', clips: [{ type: 'text', start: 5, duration: 2, params: { text: 'GO' } }] },
+        { name: 'Middle', target: 'face1', clips: [{ type: 'off', start: 2, duration: 2 }] },
+      ]);
+      const textOnly = await api('/api/sets', { method: 'POST', body: JSON.stringify({ name: 'E2E text', duration: 10, tracks: [
+        { name: 'Top', target: 'face0', clips: [{ type: 'text', start: 5, duration: 2, params: { text: 'GO' } }] }] }) });
+      const c5 = await browser.newContext({ viewport: { width: 800, height: 600 } });
+      const p5 = await c5.newPage();
+      await p5.goto(`${BASE}/sets`);
+      const third = (rows, k) => rows.slice(k * rows.length / 3, (k + 1) * rows.length / 3);
+      const mean = (px) => { let s = 0; for (let i = 0; i < px.length; i += 4) s += px[i] + px[i + 1] + px[i + 2]; return s / (px.length / 4) / 3; };
+      const at = async (id, t) => serverRows(p5, id, t, 0, 384);
+      const a3 = await at(plain.id, 3);
+      const b3 = await at(over.id, 3);
+      const d = [0, 1, 2].map((k) => compare(third(a3, k), third(b3, k)).mad);
+      check(d[0] < 1 && d[2] < 1 && mean(third(b3, 1)) < 6 && mean(third(a3, 1)) > 12,
+        `inside the Off clip: the video in the top and bottom lights, black in the middle (differences ${d.map((x) => x.toFixed(1)).join(' / ')}, middle ${mean(third(a3, 1)).toFixed(0)} -> ${mean(third(b3, 1)).toFixed(0)})`);
+      const a1 = await at(plain.id, 1);
+      const b1 = await at(over.id, 1);
+      check(compare(a1, b1).mad < 1 && [0, 1, 2].every((k) => mean(third(b1, k)) > 12), 'outside it: the video in all three lights');
+      const b5 = await at(over.id, 5.5);
+      const t5 = await at(textOnly.id, 5.5);
+      const a5 = await at(plain.id, 5.5);
+      check(compare(third(b5, 0), third(t5, 0)).mad < 3 && compare(third(b5, 2), third(a5, 2)).mad < 1,
+        `a text over the whole-sign video shows the text in that light (top vs text alone: ${compare(third(b5, 0), third(t5, 0)).mad.toFixed(1)}), the video in the others`);
+      await c5.close();
+      for (const s of [plain, over, textOnly]) await api(`/api/sets/${s.id}`, { method: 'DELETE' });
+    }
+
+    section('a transparent background: the letters over the whole-sign video');
+    {
+      const tset = await api('/api/sets', { method: 'POST', body: JSON.stringify({ name: 'E2E transparent', duration: 10, tracks: [
+        { name: 'Whole sign', target: 'all', clips: [{ type: 'video', start: 0, duration: 8, params: { media: signVideo.id, loop: true } }] },
+        { name: 'Top', target: 'face0', clips: [{ type: 'text', start: 0, duration: 8, params: { text: 'OLD', bg: 'face', transparent: true } }] },
+        { name: 'Middle', target: 'face1', clips: [{ type: 'text', start: 0, duration: 8, params: { text: 'HI', ink: '#00ff00' } }] },
+      ] }) });
+      const plainV = await api('/api/sets', { method: 'POST', body: JSON.stringify({ name: 'E2E plain video', duration: 10, tracks: [
+        { name: 'Whole sign', target: 'all', clips: [{ type: 'video', start: 0, duration: 8, params: { media: signVideo.id, loop: true } }] }] }) });
+      const c6 = await browser.newContext({ viewport: { width: 1600, height: 900 } });
+      const p6 = await c6.newPage();
+      p6.on('pageerror', (e) => {
+        failures++;
+        console.log('  PAGE ERROR', e.message);
+      });
+      const h6 = helpers(p6);
+      await p6.goto(`${BASE}/editor/${tset.id}`);
+      await p6.waitForSelector('[data-whole]');
+      await p6.waitForTimeout(400);
+      const cs6 = await h6.clips();
+      const hi = cs6.find((x) => x.row === 1);
+      const old = cs6.find((x) => x.row === 0);
+      const bgRow = p6.locator('.insp-row', { hasText: 'Background' }).first();
+      // a clip saved with the old "no background" switch shows Transparent
+      await p6.mouse.click(...Object.values(await h6.clipCenter(old.id)));
+      check((await bgRow.locator('button.active').textContent().catch(() => '')).includes('Transparent'), 'a clip with the old see-through switch shows Transparent');
+      check(await p6.locator(`[data-clip="${old.id}"]`).evaluate((el) => el.classList.contains('see')), 'and looks see-through on the timeline');
+      await bgRow.locator('button', { hasText: 'Light' }).click();
+      // the middle text: Transparent
+      await p6.mouse.click(...Object.values(await h6.clipCenter(hi.id)));
+      check(!(await bgRow.locator('button.active', { hasText: 'Transparent' }).count()), 'a text starts with a background');
+      await h6.waitFor(async () => (await h6.mean(140, 240))[0] > 60, 3000); // the amber disc is in the preview
+      const amber = await h6.mean(140, 240);
+      await bgRow.locator('button', { hasText: 'Transparent' }).click();
+      const after = await h6.waitFor(async () => {
+        const m = await h6.mean(140, 240);
+        return Math.abs(m[0] - amber[0]) > 30 ? m : null;
+      }, 3000);
+      check(!!after, `the preview drops the amber disc at once (red ${amber[0].toFixed(0)} -> ${after?.[0].toFixed(0)})`);
+      check((await bgRow.locator('button.active').textContent()).includes('Transparent'), 'Transparent is chosen');
+      const inkRow = p6.locator('.insp-row:has(.insp-label:text-is("Ink"))');
+      check((await inkRow.count()) === 1 && (await inkRow.locator('button', { hasText: 'Random' }).count()) === 1 && !(await inkRow.locator('button', { hasText: 'Transparent' }).count()),
+        'a colour without the flag (the ink) offers no Transparent');
+      check((await p6.locator(`[data-clip="${hi.id}"]`).getAttribute('title')).includes('Background: transparent'), 'the tooltip says "Background: transparent"');
+      await p6.screenshot({ path: `${SHOTS}/whole-12-transparent.png` });
+      await p6.keyboard.press('Control+s');
+      await h6.waitFor(async () => !(await p6.locator('[data-testid=dirty]').count()));
+      const saved = await api(`/api/sets/${tset.id}`);
+      const savedOld = saved.tracks.find((t) => t.target === 'face0').clips[0].params;
+      check(saved.tracks.find((t) => t.target === 'face1').clips[0].params.bg === 'transparent', 'saved as bg "transparent"');
+      check(savedOld.bg === 'face' && !('transparent' in savedOld), 'choosing Light for the old clip dropped its old switch');
+      await p6.reload();
+      await p6.waitForSelector('[data-whole]');
+      await p6.mouse.click(...Object.values(await h6.clipCenter(hi.id)));
+      check((await bgRow.locator('button.active').textContent()).includes('Transparent'), 'after a reload the inspector shows Transparent');
+      // the sign: the video around the letters, the letters green
+      const a = await serverRows(p6, plainV.id, 3, 128, 256);
+      const b = await serverRows(p6, tset.id, 3, 128, 256);
+      let same = 0;
+      let green = 0;
+      let changed = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        const d = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+        if (d < 12) same++;
+        else {
+          changed++;
+          if (b[i + 1] > 150 && b[i] < 110 && b[i + 2] < 110) green++;
+        }
+      }
+      const n = a.length / 4;
+      console.log(`        middle light: ${(same / n * 100).toFixed(0)}% as the video alone, ${(changed / n * 100).toFixed(0)}% changed, of which ${(green / Math.max(1, changed) * 100).toFixed(0)}% green`);
+      check(same / n > 0.5 && changed / n > 0.03 && green / changed > 0.6, 'the middle light shows the video around green letters');
+      await c6.close();
+      for (const s of [tset, plainV]) await api(`/api/sets/${s.id}`, { method: 'DELETE' });
     }
   }
 
@@ -992,6 +1196,10 @@ try {
     check((await speedRow.textContent()).includes('only at 1×'), `the note about the sound is next to it ("${(await speedRow.locator('.insp-help').textContent())}")`);
     await speedRow.locator('button', { hasText: /^2×$/ }).click();
     await p4.screenshot({ path: `${SHOTS}/speed-1-inspector.png` });
+    {
+      const tip = await p4.locator(`[data-clip="${mid.id}"]`).getAttribute('title');
+      check(tip.startsWith(`Video: ${video.name}\nMiddle light · 0–6 s (6 s)`) && tip.includes('\nSpeed: 2'), `a video at speed 2: its tooltip says so ("${tip.replace(/\n/g, ' / ')}")`);
+    }
     await p4.mouse.click(...Object.values(await h4.clipCenter(top.id)));
     await speedRow.locator('button', { hasText: /^0.5×$/ }).click();
     const typed = await h4.waitFor(async () => (await speedRow.locator('#p-speed').inputValue()) === '0.5' || null, 1000);
@@ -1194,11 +1402,19 @@ try {
         const blk = all.find((x) => x.row === 'whole');
         const L = await hh.lanes();
         const bb = blk && (await p.locator(`[data-clip="${blk.id}"]`).boundingBox());
-        const free = blk && !all.some((x) => x.row !== 'whole' && x.row !== 3 && x.start < blk.start + blk.dur - 1e-3 && blk.start < x.start + x.dur - 1e-3);
-        // 13 s is in a gap of the lights shorter than the video: the block fills that gap
-        check(!!blk && free && blk.start <= 13 && blk.start + blk.dur >= 13 && Math.abs(bb.y - (L[0].top + 4)) < 1.5 && Math.abs(bb.y + bb.height - (L[2].bottom - 4)) < 1.5,
-          `phone: tap a light, tap the whole-sign video: one block over the three lights (${blk?.start.toFixed(2)}..${blk ? (blk.start + blk.dur).toFixed(2) : ''})`);
+        // the light clips there stay over it
+        check(!!blk && near(blk.start, 13, 0.6) && Math.abs(bb.y - (L[0].top + 4)) < 1.5 && Math.abs(bb.y + bb.height - (L[2].bottom - 4)) < 1.5,
+          `phone: tap a light, tap the whole-sign video: one block over the three lights at the tap (${blk?.start.toFixed(2)}..${blk ? (blk.start + blk.dur).toFixed(2) : ''})`);
+        const over = all.filter((x) => x.row !== 'whole' && x.row !== 3 && x.start < blk.start + blk.dur && blk.start < x.start + x.dur);
+        const onTop = await Promise.all(over.map(async (x) => {
+          const q = await hh.clipCenter(x.id);
+          return p.evaluate(([xx, yy, id]) => document.elementFromPoint(xx, yy)?.closest('[data-clip]')?.dataset.clip === id, [q.x, q.y, x.id]);
+        }));
+        check(over.length > 0 && onTop.every(Boolean), `phone: the ${over.length} light clips at that time are drawn over the block`);
         await p.screenshot({ path: `${SHOTS}/${dev.name}-4-whole.png` });
+        await p.touchscreen.tap(...Object.values(await hh.clipCenter(over[0].id)));
+        await p.waitForTimeout(100);
+        await p.screenshot({ path: `${SHOTS}/${dev.name}-5-over-selected.png` });
         await p.locator('button[aria-label=Undo]').tap();
       }
     }

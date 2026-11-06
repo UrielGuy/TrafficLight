@@ -189,16 +189,17 @@ def test_video_close_stops_the_thread(env, media):
 def test_video_sound_cue(env, media):
     vid = media[1]["video"]
     lib = media[0]
-    r = make(env, "video", media=vid.id, volume=0.4)
+    assert make(env, "video", media=vid.id).audio(ctx(0.5)) is None          # its own sound is off unless asked for
+    r = make(env, "video", media=vid.id, sound=True, volume=0.4)
     cue = r.audio(ctx(0.5))
     assert cue.path == lib.audio_path(vid.id) and Path(cue.path).is_file()
     assert cue.position == pytest.approx(0.5) and cue.gain == pytest.approx(0.4)
     assert r.audio(ctx(vid.duration + 0.25)).position == pytest.approx(0.25, abs=1e-6)    # loop
-    assert make(env, "video", media=vid.id, offset=0.3).audio(ctx(0.2)).position == pytest.approx(0.5)
+    assert make(env, "video", media=vid.id, sound=True, offset=0.3).audio(ctx(0.2)).position == pytest.approx(0.5)
     assert make(env, "video", media=vid.id, sound=False).audio(ctx(0.5)) is None
-    assert make(env, "video", media=vid.id, speed=2).audio(ctx(0.5)) is None
-    assert make(env, "video", media=vid.id, loop=False).audio(ctx(vid.duration + 1)) is None
-    assert make(env, "video", media=media[1]["silent"].id).audio(ctx(0.1)) is None
+    assert make(env, "video", media=vid.id, sound=True, speed=2).audio(ctx(0.5)) is None
+    assert make(env, "video", media=vid.id, sound=True, loop=False).audio(ctx(vid.duration + 1)) is None
+    assert make(env, "video", media=media[1]["silent"].id, sound=True).audio(ctx(0.1)) is None
 
 
 def test_video_validate_and_duration(env, media):
@@ -208,7 +209,8 @@ def test_video_validate_and_duration(env, media):
     assert V.validate({}, "face0", env) == ["No video chosen"]
     assert "no longer" in V.validate({"media": "gone"}, "all", env)[0]
     assert "not a video" in V.validate({"media": items["song"].id}, "face1", env)[0]
-    assert "speed 1" in V.validate({"media": items["video"].id, "speed": 2}, "face1", env)[0]
+    assert "speed 1" in V.validate({"media": items["video"].id, "sound": True, "speed": 2}, "face1", env)[0]
+    assert V.validate({"media": items["video"].id, "speed": 2}, "face1", env) == []       # silent by default: no complaint
     assert V.validate({"media": items["video"].id}, "face0", RenderEnv(settings=Settings())) != []
     assert V.natural_duration({"media": items["video"].id}, env) == pytest.approx(N / FPS)
     assert V.natural_duration({"media": items["video"].id, "speed": 2}, env) == pytest.approx(N / FPS / 2)
@@ -295,7 +297,7 @@ def test_playing_clips_switch_to_a_re_made_crop(tmp_path, monkeypatch):
         Image.fromarray(frame_picture(9, 300, 200)).save(tmp_path / "pic.png")
         pic = upload(lib, tmp_path / "pic.png")
         env = RenderEnv(settings=Settings(), media=lib)
-        v = make(env, "video", media=vid.id, fit="stretch")
+        v = make(env, "video", media=vid.id, fit="stretch", sound=True)
         snd = make(env, "audio", media=vid.id)
         im = make(env, "image", media=pic.id, fit="stretch")
         t = 0.2

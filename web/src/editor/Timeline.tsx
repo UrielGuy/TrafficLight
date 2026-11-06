@@ -44,6 +44,7 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
   const tracks = useDoc((s) => s.history.present.tracks);
   const rows = useMemo(() => rowTracks(tracks), [tracks]);
   const nLights = useMemo(() => rows.filter((t) => isLight(t.target)).length, [rows]);
+  const wholeKey = tracks.filter((t) => t.target === 'all').flatMap((t) => t.clips.map((c) => `${c.start}:${clipEnd(c)}`)).join(',');
   const bpm = useDoc((s) => s.history.present.bpm);
   const offset = useDoc((s) => s.history.present.beat_offset);
   const duration = useDoc((s) => s.history.present.duration);
@@ -255,6 +256,13 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
     return track.target === 'all' ? { clip, row: 0, span: Math.max(1, v.nLights), whole: true } : { clip, row: v.rows.findIndex((t) => t.id === track.id), span: 1, whole: false };
   }, []);
 
+  /** Where a click at time t puts the insertion point (snapped like a dragged edge). */
+  const insertTime = (t0: number, shift: boolean) => {
+    const t = Math.max(0, t0);
+    const st = L.current.snap && !shift ? snapTarget(t, snapCtx(new Set())) : null;
+    return Math.max(0, st?.t ?? Math.round(t * 1000) / 1000);
+  };
+
   const markMoving = (ids: string[], on: boolean) => {
     const sc = scroller.current;
     if (!sc) return;
@@ -378,6 +386,12 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
       const wasSelected = docStore.get()!.selection.includes(id);
       if (mod) toggleSelect(id);
       else if (!wasSelected) select([id]);
+      // A whole-sign block lies under the light rows: pointing at it also marks that row and time
+      // for the next library item, which then overrides the block in that light.
+      if (clipEl.dataset.whole !== undefined && !edge) {
+        const row = L.current.rows[rowAt(e.clientY)];
+        if (row && isLight(row.target)) setInsert({ trackId: row.id, t: insertTime(xToT(e.clientX), e.shiftKey) });
+      }
       // On touch a first tap only selects (so a swipe over clips still scrolls); a selected clip drags.
       if (e.pointerType === 'touch' && !wasSelected) return;
       if (mod && wasSelected) return;
@@ -439,11 +453,7 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
       }
     } else if (g.kind === 'pending-empty') {
       if (!g.additive) select([]);
-      if (g.trackId) {
-        const t = Math.max(0, g.t);
-        const st = L.current.snap && !e.shiftKey ? snapTarget(t, snapCtx(new Set())) : null;
-        setInsert({ trackId: g.trackId, t: Math.max(0, st?.t ?? Math.round(t * 1000) / 1000) });
-      }
+      if (g.trackId) setInsert({ trackId: g.trackId, t: insertTime(g.t, e.shiftKey) });
     } else if (g.kind === 'move') {
       if (g.plan && g.plan.some((m) => {
         const loc = findClip(draft(), m.id);
@@ -625,7 +635,7 @@ export default function Timeline({ session, narrow, onInspect }: { session: Edit
                 <TrackRow key={t.id} track={t} index={i} first={i === lo} last={i === hi} lastLight={isLight(t.target) && nLights === 1}
                   pps={pps} headW={HEAD_W} rowH={ROW_H} contentW={contentW}
                   selKey={sel} problems={problems} types={types} media={media} color={color(t.target)} settings={settings}
-                  drop={drop} insertT={insert?.trackId === t.id ? insert.t : null} onGrip={startTrackDrag} />
+                  drop={drop} insertT={insert?.trackId === t.id ? insert.t : null} wholeKey={wholeKey} onGrip={startTrackDrag} />
               );
             })}
             {tracks.filter((t) => t.target === 'all').map((t) => t.clips.map((c) => (
@@ -714,18 +724,22 @@ interface RowProps {
   settings: Settings | null;
   drop: string;
   insertT: number | null;
+  /** Whole-sign clips as "start:end,..." (a string so unchanged rows keep their memo). */
+  wholeKey: string;
   onGrip: (id: string, e: React.PointerEvent) => void;
 }
 
-const TrackRow = memo(function TrackRow({ track, index, first, last, lastLight, pps, headW, rowH, contentW, selKey, problems, types, media, color, settings, drop, insertT, onGrip }: RowProps) {
+const TrackRow = memo(function TrackRow({ track, index, first, last, lastLight, pps, headW, rowH, contentW, selKey, problems, types, media, color, settings, drop, insertT, wholeKey, onGrip }: RowProps) {
   const sel = useMemo(() => new Set(selKey ? selKey.split(',') : []), [selKey]);
+  const whole = useMemo(() => (wholeKey ? wholeKey.split(',').map((x) => x.split(':').map(Number)) : []), [wholeKey]);
+  const over = (c: Clip) => isLight(track.target) && whole.some(([a, b]) => c.start < b - 1e-6 && a < clipEnd(c) - 1e-6);
   return (
     <div className={`tl-row ${track.muted ? 'muted' : ''} ${drop} ${track.target === 'audio' ? 'audio' : ''}`} style={{ height: rowH, ['--track-color' as string]: color }}>
       <TrackHead track={track} index={index} first={first} last={last} lastLight={lastLight} width={headW} settings={settings} onGrip={onGrip} />
       <div className="tl-lane" style={{ width: contentW }}>
         {track.clips.map((c) => (
           <ClipView key={c.id} clip={c} pps={pps} selected={sel.has(c.id)} problems={problems.get(c.id)} type={types.get(c.type)}
-            media={typeof c.params.media === 'string' ? media.get(c.params.media) : undefined} trackColor={color} />
+            media={typeof c.params.media === 'string' ? media.get(c.params.media) : undefined} trackColor={color} target={track.target} over={over(c)} />
         ))}
         {insertT !== null && <div className="tl-insert" style={{ left: insertT * pps }} title="New clips from the library go here" />}
       </div>

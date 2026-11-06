@@ -25,7 +25,8 @@ class Sparkle(c.Fx):
     description = "Stars twinkle in and out at random places, in their own rhythm rather than the beat."
     targets = ("face", "all")
     params = [
-        c.color_param("color", "Colour", "face"),
+        c.color_param("color", "Colour", "face", "Transparent: only the stars are drawn, over what is below.",
+                      transparent=True),
         c.color_param("ink", "Star colour", "#ffffff", "Used when multi-coloured is off."),
         ParamSpec("multicolor", "Multi-coloured", "bool", True),
         ParamSpec("count", "Stars per light", "int", 20, 3, 60, 1),
@@ -39,11 +40,13 @@ class Sparkle(c.Fx):
         base = self.col(ctx, "color", "hue_color", fallback=ctx.face_color)
         n, _ = c.beat_state(ctx)
         hue = self.num("hue_ink") * n
+        clear = c.is_clear(base)
         if self.flag("multicolor"):
             pal = [colors.hue_rotate(p, hue) for p in _PALETTE]
-            pal = [p for p in pal if sum(abs(a - b) for a, b in zip(p, base)) > 150] or [c.WHITE]
+            if not clear:
+                pal = [p for p in pal if sum(abs(a - b) for a, b in zip(p, base)) > 150] or [c.WHITE]
         else:
-            pal = [self.col(ctx, "ink", "hue_ink", avoid=base, fallback=c.WHITE)]
+            pal = [self.col(ctx, "ink", "hue_ink", avoid=None if clear else base, fallback=c.WHITE)]
         palette = np.array(pal, np.float32)
         img = c.canvas(w, h, base)
 
@@ -96,5 +99,5 @@ class Sparkle(c.Fx):
         a_sum = a_sum.reshape(h, w).astype(np.float32)
         acc = acc.reshape(h, w, 3).astype(np.float32)
         a_c = np.clip(a_sum, 0.0, 1.0)
-        img = img * (1.0 - a_c[..., None]) + acc / np.maximum(a_sum, 1e-6)[..., None] * a_c[..., None]
+        c.paint_map(img, a_c, acc / np.maximum(a_sum, 1e-6)[..., None])
         return c.to_u8(img)

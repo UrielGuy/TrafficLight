@@ -11,7 +11,8 @@ import { formatTime } from '../state/hooks';
 import { useStore } from '../state/store';
 import { accepts, copySelection, deleteSelection, duplicateSelection, fitDurationToClips, paste, setWhole, splitAtPlayhead } from './actions';
 import { secondsPerBeat, tapTempo } from './beats';
-import { categoryHue, trackColor, typeMap } from './clipinfo';
+import { categoryHue, colorValue, TRANSPARENT, trackColor, typeMap, withColor } from './clipinfo';
+import { CHECKER } from './ClipView';
 import ClipPicture from './ClipPicture';
 import { edit, getClipboard, sealHistory, select, useDoc } from './doc';
 import { clock, problemListStore, problemsStore } from './session';
@@ -60,7 +61,9 @@ function Row({ label, children, help, htmlFor, wide }: { label: string; children
   );
 }
 
-function ColorControl({ value, onChange, faceColor, label }: { value: string; onChange: (v: string) => void; faceColor: string; label: string }) {
+function ColorControl({ value, onChange, faceColor, label, transparent }: {
+  value: string; onChange: (v: string) => void; faceColor: string; label: string; transparent: boolean;
+}) {
   const hex = /^#[0-9a-f]{6}$/i.test(value);
   return (
     <div className="colorctl" role="group" aria-label={label}>
@@ -74,6 +77,12 @@ function ColorControl({ value, onChange, faceColor, label }: { value: string; on
         <input type="color" value={hex ? value : '#ffffff'} onChange={(e) => onChange(e.target.value)} aria-label={`${label}: pick a colour`} />
         <span>{hex ? value : 'Pick'}</span>
       </label>
+      {transparent && (
+        <button type="button" className={value === TRANSPARENT ? 'active' : ''} aria-pressed={value === TRANSPARENT} onClick={() => onChange(TRANSPARENT)}
+          title="Nothing drawn in this colour: what is below (a whole-sign video) shows through">
+          <i style={{ background: CHECKER }} /> Transparent
+        </button>
+      )}
     </div>
   );
 }
@@ -160,7 +169,7 @@ function ParamControl({ spec, value, onChange, faceColor, media, help }: {
       break;
     }
     case 'color':
-      control = <ColorControl value={String(v ?? '')} onChange={onChange} faceColor={faceColor} label={spec.label} />;
+      control = <ColorControl value={String(v ?? '')} onChange={onChange} faceColor={faceColor} label={spec.label} transparent={!!spec.transparent} />;
       break;
     case 'media':
       control = <MediaSelect spec={spec} value={String(v ?? '')} onChange={onChange} media={media} />;
@@ -263,7 +272,9 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
       {type && type.params.length > 0 && (
         <section className="insp-section">
           {type.params.map((spec) => (
-            <ParamControl key={spec.key} spec={spec} value={clip.params[spec.key]} onChange={(v) => setParam(spec.key, v)} faceColor={faceColor} media={media}
+            <ParamControl key={spec.key} spec={spec} faceColor={faceColor} media={media}
+              value={spec.kind === 'color' ? colorValue(clip, type, spec) : clip.params[spec.key]}
+              onChange={(v) => (spec.kind === 'color' ? set((c) => ({ ...c, params: withColor(c, type, spec.key, String(v)) }), `p.${spec.key}`) : setParam(spec.key, v))}
               help={spec.key === 'speed' ? speedHelp : undefined} />
           ))}
         </section>
@@ -286,7 +297,7 @@ function ClipInspector({ clip, target, trackName, type }: { clip: Clip; target: 
             <span className="numval">{Math.round(clip.opacity * 100)}%</span>
           </div>
         </Row>
-        {!audio && (
+        {!audio && type?.masked !== false && (
           <Row label="Mask" help={`Only the round lights are seen on the sign (the default). None fills the whole ${target === 'all' ? 'sign' : 'square'}.`}>
             <div className="segmented small" data-testid="mask">
               {/* the default (null) is the circles: stored as null so a later change of the default reaches it */}
@@ -375,7 +386,8 @@ function SetInspector() {
       <p className="muted small insp-tips">
         Click an empty spot on a track, then a library item, to add it there. Drag clips to move them, their edges to trim.
         Shift-click or drag a box to select several. Hold Shift while dragging to turn snapping off.
-        A whole-sign clip is one block over the three lights: while it plays, nothing else can be on them.
+        A whole-sign clip is one block behind the three lights: a clip on one light shows over it in that light,
+        and an “Off” clip there switches that light off while the whole-sign video plays.
         Videos and pictures cropped for the whole sign become one; “Shows on” switches a clip between one light and the whole sign.
       </p>
     </div>
