@@ -9,7 +9,7 @@ export const FACES = 3;
 export const SIGN_W = FACE;
 export const SIGN_H = FACE * FACES;
 /** Radius of a light's lit disc inside its FACE x FACE box. */
-export const FACE_RADIUS = 61;
+export const FACE_RADIUS = FACE / 2;
 
 export interface Box {
   x: number;

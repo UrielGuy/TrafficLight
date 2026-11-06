@@ -106,7 +106,7 @@ For set time `t`:
    render it into its box (128×128 at the light's rows for `faceN`, 128×384
    for `all`), then apply, in this order: the renderer's own alpha (if RGBA),
    the mask (`Clip.mask`; default True = anti-aliased disc of radius
-   `FACE_RADIUS` on a light, the three discs on `all`, because only the
+   `FACE_RADIUS` (half the box: it fills the light's 128 px) on a light, the three discs on `all`, because only the
    round lights are seen on the sign; False fills the whole box), `opacity`,
    `fade_in` / `fade_out` (linear), and alpha-blend over what is below.
 3. Collect an `AudioCue` from every active clip whose renderer returns one

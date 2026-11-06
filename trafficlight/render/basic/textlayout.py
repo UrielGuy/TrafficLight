@@ -337,7 +337,7 @@ def layout_text(text: str, font: str = "auto", max_size: int = 0,
     if not words:
         return Layout("empty", missing)
     scale = min(width, height) / config.FACE
-    r = config.FACE_RADIUS * scale
+    r = config.TEXT_RADIUS * scale
     cx, cy = width / 2, height / 2
     for size in size_ladder(max_size):
         fs = lib.fontset(choice, size * scale)

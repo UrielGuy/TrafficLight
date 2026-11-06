@@ -59,8 +59,28 @@ export function clipSummary(clip: Clip, type: ClipType | undefined, media: Map<s
   return '';
 }
 
+/** One choice of a clip type offered as its own palette item: the figure "Walking" of the type "Figure". */
+export interface Preset {
+  key: string;
+  value: unknown;
+  label: string;
+}
+
 /** What can be dragged from the palette. */
-export type PaletteItem = { kind: 'type'; type: ClipType } | { kind: 'media'; media: MediaItem; type: ClipType };
+export type PaletteItem = { kind: 'type'; type: ClipType; preset?: Preset } | { kind: 'media'; media: MediaItem; type: ClipType };
+
+/** Categories whose types are a list of things to pick from: each choice gets its own palette item. */
+const PRESET_CATEGORIES = new Set(['figure']);
+
+/**
+ * The palette items of a clip type: one, or one per option of its leading choice for the
+ * categories above (so a figure is dragged in directly instead of chosen in the inspector).
+ */
+export function typeItems(type: ClipType): PaletteItem[] {
+  const first = type.params[0];
+  if (!PRESET_CATEGORIES.has(type.category) || first?.kind !== 'select' || !first.options?.length) return [{ kind: 'type', type }];
+  return first.options.map((o) => ({ kind: 'type', type, preset: { key: first.key, value: o.value, label: o.label } }));
+}
 
 /** Where a picture goes in a box, as the server's media clips place it (render/media/common.py geometry). */
 export interface Placement {
@@ -111,7 +131,7 @@ export function itemDuration(item: PaletteItem): number {
 }
 
 export function itemLabel(item: PaletteItem): string {
-  return item.kind === 'media' ? item.media.name : item.type.label;
+  return item.kind === 'media' ? item.media.name : item.preset?.label ?? item.type.label;
 }
 
 /** A fresh clip for a palette item: the type's defaults filled in, media chosen. */
@@ -119,5 +139,6 @@ export function makeClip(item: PaletteItem, start: number, duration: number): Cl
   const params: Record<string, unknown> = {};
   for (const p of item.type.params) params[p.key] = p.default;
   if (item.kind === 'media') params.media = item.media.id;
+  else if (item.preset) params[item.preset.key] = item.preset.value;
   return { id: newId(), type: item.type.type, start, duration, params, mask: null, opacity: 1, fade_in: 0, fade_out: 0 };
 }

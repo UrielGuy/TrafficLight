@@ -13,8 +13,9 @@ PANEL_W = 128
 PANEL_H = 64
 PANELS = 6
 
-FACE_RADIUS = 61.0    # radius of the lit disc inside its 128 px box (3 px margin, as the old sign)
+FACE_RADIUS = FACE / 2    # the lit disc fills its 128 px box edge to edge
 RING_WIDTH = 2.0      # outline ring of an unlit light
+TEXT_RADIUS = 61.0    # text is fitted inside this: a small margin to the light's edge, and the old sign's layouts
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = REPO_ROOT / "assets"

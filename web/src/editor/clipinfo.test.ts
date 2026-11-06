@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ClipType, MediaItem, MediaShape } from '../api/types';
-import { fitPicture, itemWhole, type PaletteItem } from './clipinfo';
+import { fitPicture, itemLabel, itemWhole, makeClip, typeItems, type PaletteItem } from './clipinfo';
 
 const type = (targets: string[]): ClipType => ({ type: 'video', label: 'Video', category: 'media', targets, default_duration: 10, description: '', params: [] });
 const media = (shape: MediaShape, width: number, height: number) =>
@@ -22,6 +22,27 @@ describe('itemWhole', () => {
     expect(itemWhole({ kind: 'type', type: type(['face']) })).toBe(false);
     expect(itemWhole({ kind: 'type', type: type(['face', 'all']) })).toBe(false);
     expect(itemWhole({ kind: 'media', media: media('sign', 1, 3), type: type(['audio']) })).toBe(false);
+  });
+});
+
+describe('typeItems', () => {
+  const figure: ClipType = {
+    type: 'figure', label: 'Figure', category: 'figure', targets: ['face'], default_duration: 8, description: '',
+    params: [
+      { key: 'figure', label: 'Figure', kind: 'select', default: 'standing', options: [{ value: 'standing', label: 'Person standing' }, { value: 'walking', label: 'Walking' }] },
+      { key: 'color', label: 'Colour', kind: 'color', default: 'face' },
+    ],
+  } as unknown as ClipType;
+  it('gives a figure type one item per figure, each making a clip of that figure', () => {
+    const items = typeItems(figure);
+    expect(items.map(itemLabel)).toEqual(['Person standing', 'Walking']);
+    const clip = makeClip(items[1], 2, 8);
+    expect(clip.type).toBe('figure');
+    expect(clip.params).toEqual({ figure: 'walking', color: 'face' });
+  });
+  it('leaves other types as one item', () => {
+    expect(typeItems({ ...figure, category: 'beat' })).toEqual([{ kind: 'type', type: { ...figure, category: 'beat' } }]);
+    expect(typeItems(type(['face']))).toHaveLength(1);
   });
 });
 

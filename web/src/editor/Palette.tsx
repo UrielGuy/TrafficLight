@@ -8,7 +8,7 @@ import { useCatalog, useMedia } from '../state/app';
 import { formatTime } from '../state/hooks';
 import { createStore, useStore } from '../state/store';
 import { addItem } from './actions';
-import { CATEGORY_LABELS, CATEGORY_ORDER, categoryHue, itemLabel, itemWhole, MEDIA_CLIP_TYPE, type PaletteItem } from './clipinfo';
+import { CATEGORY_LABELS, CATEGORY_ORDER, categoryHue, itemLabel, itemWhole, MEDIA_CLIP_TYPE, typeItems, type PaletteItem } from './clipinfo';
 import { dragItemStore, dropTarget } from './dnd';
 
 const ghostStore = createStore<{ item: PaletteItem; x: number; y: number; over: boolean } | null>(null);
@@ -89,9 +89,14 @@ export default function Palette() {
   const query = q.trim().toLowerCase();
 
   const groups = useMemo(() => {
-    const types = (catalog ?? []).filter((t) => !query || [t.label, t.type, t.category, t.description].some((s) => s.toLowerCase().includes(query)));
-    const cats = [...new Set([...CATEGORY_ORDER, ...types.map((t) => t.category)])];
-    return cats.map((c) => ({ cat: c, items: types.filter((t) => t.category === c) })).filter((g) => g.items.length);
+    // A search finds a type by its own words (then all its items show) or single items by their name.
+    const hit = (words: string[]) => !query || words.some((s) => s.toLowerCase().includes(query));
+    const items = (catalog ?? []).flatMap((t) => {
+      const all = typeItems(t);
+      return hit([t.label, t.type, t.category, t.description]) ? all : all.filter((i) => hit([itemLabel(i)]));
+    });
+    const cats = [...new Set([...CATEGORY_ORDER, ...items.map((i) => i.type.category)])];
+    return cats.map((c) => ({ cat: c, items: items.filter((i) => i.type.category === c) })).filter((g) => g.items.length);
   }, [catalog, query]);
 
   const byType = useMemo(() => new Map((catalog ?? []).map((t) => [t.type, t])), [catalog]);
@@ -109,12 +114,14 @@ export default function Palette() {
           <section key={g.cat} className="pal-group">
             <h3>{CATEGORY_LABELS[g.cat] ?? g.cat}</h3>
             <div className="pal-chips">
-              {g.items.map((t) => {
-                const item: PaletteItem = { kind: 'type', type: t };
+              {g.items.map((item) => {
+                const t = item.type;
+                const preset = item.kind === 'type' ? item.preset : undefined;
                 return (
-                  <button key={t.type} className="pal-chip" title={t.description || t.label} style={{ ['--hue' as string]: categoryHue(t.category) }}
-                    onPointerDown={(e) => onItemPointerDown(e, item)} onClick={() => addItem(item)} data-type={t.type}>
-                    <span className="pal-chip-label">{t.label}</span>
+                  <button key={preset ? `${t.type}:${String(preset.value)}` : t.type} className="pal-chip" title={preset ? `${t.label}: ${preset.label}` : t.description || t.label}
+                    style={{ ['--hue' as string]: categoryHue(t.category) }}
+                    onPointerDown={(e) => onItemPointerDown(e, item)} onClick={() => addItem(item)} data-type={t.type} data-preset={preset ? String(preset.value) : undefined}>
+                    <span className="pal-chip-label">{itemLabel(item)}</span>
                     <span className="pal-where">{whereLabel(t)}</span>
                   </button>
                 );

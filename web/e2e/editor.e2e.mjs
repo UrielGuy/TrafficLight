@@ -1133,7 +1133,7 @@ try {
         return Math.round(12 / step) * step;
       })();
       await p.touchscreen.tap(spot.x, spot.y);
-      await p.locator('.pal-chip[data-type="figure"]').tap();
+      await p.locator('.pal-chip[data-type="figure"]').first().tap();
       const cs2 = await hh.clips();
       const fig = cs2.find((x) => x.type === 'figure');
       check(cs2.length === n0 + 1 && fig && fig.row === 1 && near(fig.start, expected, 0.01),
