@@ -126,6 +126,7 @@ def cmd_show(a: argparse.Namespace) -> int:
             return 2
     s = build_settings(a)
     drv = ColorlightDriver(s, options=ColorlightOptions.parse(a.options))
+    drv.set_frame_rate(a.fps)
     drv.open()
     print(f"order {s.panel_order} flip {[int(f) for f in s.panel_flip]} rotate180 {s.rotate180} "
           f"color_order {s.color_order} gamma {s.gamma} brightness {s.brightness}" +

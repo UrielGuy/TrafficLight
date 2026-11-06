@@ -308,6 +308,8 @@ or with the tool's `--options`.
 | `brightness_mode` | `auto` | `card`: brightness is sent to the card. `software`: pixels are scaled and the card is told 100 %. `auto` = card, or software when the card reports firmware 2.x / 3.x (FPP: brightness "doesn't seem to work" there). |
 | `white_balance` | `1/1/1` | R/G/B multipliers in the display packet (colour temperature): e.g. `1/0.86/0.56` ≈ 4500 K (Kubota's table). |
 | `detect` | `1` | Send detection packets until the card answers, then every 2 s (a card that restarted gets the picture again). |
+| `pace` | `1` | Display packets on an even grid of the frame period (section 9, "Timing"). `0` sends each as soon as its rows have left. |
+| `pace_margin_ms` | 1.5 | Slack kept between a frame being ready to show and its slot on the grid. |
 | `skip_unchanged` | `1` | Do not re-send a picture the card already shows (section 9, "Buffer swap"). `0` sends every frame. |
 | `assumed_mbps` | 1000 | Link speed for wire-time estimates when the OS does not report it. |
 
@@ -396,6 +398,17 @@ reverse engineering:
   packets, or no traffic at all do not. So the driver sends a picture only
   when it changed (`skip_unchanged`); the card keeps the last one. Moving
   pictures still swap every frame. [tested on the card, 2026-11-06]
+* **Timing:** with "Multiple: Refresh x N" the card does N refreshes per
+  frame, locked to the display packets, so these must come at even
+  intervals. Tested at 30 fps with a moving picture: display packets
+  spaced by sleep() (±0.5 ms, extremes ±5 ms on Windows) flicker; spaced
+  evenly by spinning (±0.08 ms) flicker much less; deliberately ±3 ms
+  uneven flicker most. The driver sends them on an even grid of the frame
+  period (`pace`, `Pacer`): rows as soon as a frame is ready, the display
+  packet at its slot, the last 2 ms of the wait spun, with a high thread
+  priority (Windows) and a short GIL switch interval. Keep the frame rate a
+  whole fraction of LEDVision's Refresh Rate / Multiple (1920 / 32 = 60:
+  60, 30, 20 or 15 fps). [tested on the card, 2026-11-06]
 * **Brightness:** byte 35 of the display packet is linear: 0x80 = 50 %,
   0xbf = 75 % (Kubota's table; FPP sends 2.55 × percent). Bytes 38..40 are
   linear R, G, B levels for colour temperature. 6500 K = all equal to the

@@ -54,6 +54,10 @@ def _output_checks(o: OutputSettings, st: dict[str, Any]) -> list[dict[str, Any]
             detail = "Showing a still picture: it is sent again only when it changes (re-sending it would flicker)."
         elif fps:
             detail = f"Sending {fps:.0f} frames per second."
+            pace = st.get("pacing") or {}
+            if pace.get("jitter_ms") is not None:
+                detail += (f" Evenly spaced to ±{pace['jitter_ms']:.2f} ms (worst {pace['worst_ms']:.1f} ms): "
+                           "the card's refresh follows them.")
         else:
             detail = "Open, waiting for frames."
         out.append(check("output.driver", "ok", "LED output: Colorlight", detail))

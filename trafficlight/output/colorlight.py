@@ -31,11 +31,22 @@ its LED refresh (firmware 13.39 on the 5A-75B), so a still picture re-sent
 The card keeps showing the last picture without traffic. It is sent again
 after anything that may have lost it (brightness or mapping change, link
 back up, send failure, the card restarted: its uptime goes back).
+
+The card also locks its LED refresh to the display packets ("Multiple:
+Refresh x N" in LEDVision: N refreshes per frame), so they must come at
+even intervals: frames 1-5 ms early or late, as plain sleep() timing gives
+on Windows, visibly flicker, and evenly spaced ones (±0.1 ms) much less.
+With the frame rate known (set_frame_rate), the display packets go out on
+an even grid of the frame period (Pacer); the rows go out as soon as a
+frame is ready, into the card's hidden buffer, which is harmless.
 """
 from __future__ import annotations
 
+import ctypes
 import errno
+import math
 import os
+import sys
 import threading
 import time
 from collections import deque
@@ -54,6 +65,10 @@ DST_MAC = bytes.fromhex("112233445566")
 SRC_MAC = bytes.fromhex("222233445566")
 TYPE_OFFSET = 12
 CHECK_SECONDS = 2.0      # how often a card that answered is asked again (notices a restart)
+SPIN_SECONDS = 0.003     # the end of a wait for a display slot is spun: sleep() oversleeps by up to 2-3 ms
+# While a thread spins for a slot another may hold the GIL; it must hand it over within a fraction of a
+# millisecond, not CPython's default 5 ms.
+SWITCH_INTERVAL = 0.0002
 
 TYPE_DISPLAY, DISPLAY_LEN = 0x01, 112
 TYPE_BRIGHTNESS, BRIGHTNESS_LEN = 0x0A, 77
@@ -216,6 +231,8 @@ class ColorlightOptions:
     brightness_mode: Literal["auto", "card", "software"] = "auto"
     white_balance: tuple[float, float, float] = (1.0, 1.0, 1.0)
     detect: bool = True
+    pace: bool = True                 # display packets on an even grid of the frame period (module doc)
+    pace_margin_ms: float = 1.5       # slack kept between a frame being ready to show and its slot
     skip_unchanged: bool = True       # do not re-send a picture the card already shows (see the module doc)
     assumed_mbps: int = 1000          # link speed for timing when the OS does not report one
 
@@ -256,6 +273,93 @@ class ColorlightOptions:
         return cls.parse(os.environ.get("TRAFFICLIGHT_COLORLIGHT"))
 
 
+# ------------------------------------------------------------------ pacing
+class Pacer:
+    """Picks the time each display packet goes out: slots on an even grid of the frame period. The grid's
+    phase keeps `headroom` (half a period, at most 12 ms) between a frame being ready to show (its rows
+    have left) and its slot, so the usual variation of render and send times never reaches a slot. It
+    moves rarely, as each move makes one uneven interval: later when a frame comes closer than `margin`
+    to missing its slot (instead of frames now and then falling into the next slot: a jerk), earlier when
+    every frame for WINDOW seconds had more than a quarter period to spare beyond the headroom (after a
+    run of slow frames). Times are perf_counter seconds."""
+
+    WINDOW = 10.0
+
+    def __init__(self, period: float, margin: float):
+        self.period = period
+        self.margin = margin
+        self.headroom = max(2 * margin, min(period / 2, 0.012))
+        self.grid0: float | None = None
+        self._slack: deque[tuple[float, float]] = deque()      # (time, slot - ready)
+        self._last_move = 0.0
+        self.moves = 0
+        self._shown: float | None = None
+        self.errors: deque[float] = deque(maxlen=300)          # |interval - whole periods|, seconds
+
+    def slot(self, ready: float) -> float:
+        P = self.period
+        if self.grid0 is None:
+            self.grid0 = ready + self.headroom
+            self._last_move = ready
+            return self.grid0
+        slot = self.grid0 + math.ceil((ready - self.grid0) / P) * P
+        slack = slot - ready
+        if slack < self.margin:
+            shift = self.headroom - slack
+            self.grid0 += shift
+            slot += shift
+            self._moved(ready)
+            slack = self.headroom
+        self._slack.append((ready, slack))
+        while self._slack and self._slack[0][0] < ready - self.WINDOW:
+            self._slack.popleft()
+        if ready - self._last_move > self.WINDOW:
+            spare = min(x for _, x in self._slack) - self.headroom
+            if spare > P / 4:
+                self.grid0 -= spare
+                self._moved(ready)
+        return slot
+
+    def _moved(self, now: float) -> None:
+        self._last_move = now
+        self._slack.clear()
+        self.moves += 1
+
+    def shown(self, t: float) -> None:
+        """A display packet went out at t: for the timing statistics."""
+        prev, self._shown = self._shown, t
+        if prev is None:
+            return
+        n = round((t - prev) / self.period)
+        if 1 <= n <= 4:
+            self.errors.append(abs(t - prev - n * self.period))
+
+    def stats(self) -> dict[str, float]:
+        e = list(self.errors)
+        if not e:
+            return {}
+        return {"period_ms": round(self.period * 1000, 3),
+                "jitter_ms": round(math.sqrt(sum(x * x for x in e) / len(e)) * 1000, 3),
+                "worst_ms": round(max(e) * 1000, 3), "moves": self.moves}
+
+
+def wait_until(t: float) -> None:
+    """Return at perf_counter time t: sleep, then spin the last SPIN_SECONDS."""
+    while True:
+        d = t - time.perf_counter()
+        if d <= 0:
+            return
+        if d > SPIN_SECONDS:
+            time.sleep(d - SPIN_SECONDS)
+
+
+def _raise_thread_priority() -> None:
+    """Fewer preemptions while waiting for a display slot. Windows only; elsewhere it needs root."""
+    if sys.platform == "win32":
+        k32 = ctypes.windll.kernel32
+        k32.SetThreadPriority(k32.GetCurrentThread(), 2)        # THREAD_PRIORITY_HIGHEST
+
+
 # ------------------------------------------------------------------ driver
 @dataclass
 class _Stats:
@@ -293,6 +397,7 @@ class ColorlightDriver(OutputDriver):
         self._levels_dirty = True
         self._card_current = False      # the card shows self._last as last sent
         self._holding = False           # the newest picture was unchanged, so not sent
+        self._pacer: Pacer | None = None
         self._stats = _Stats()
 
     # ---- contract
@@ -315,6 +420,12 @@ class ColorlightDriver(OutputDriver):
 
     def send_card(self, image: np.ndarray) -> None:
         self._offer(image, True)
+
+    def set_frame_rate(self, fps: float) -> None:
+        if not self.options.pace or fps <= 0:
+            self._pacer = None
+        elif self._pacer is None or abs(self._pacer.period - 1.0 / fps) > 1e-9:
+            self._pacer = Pacer(1.0 / fps, self.options.pace_margin_ms / 1000.0)
 
     def set_brightness(self, value: float) -> None:
         self._brightness = min(max(float(value), 0.0), 1.0)
@@ -387,6 +498,7 @@ class ColorlightDriver(OutputDriver):
             "receiver_found": rec is not None,
             "sent_fps": round(fps, 1), "frames": s.frames, "dropped": s.dropped,
             "held": s.held, "holding": self._holding,
+            "pacing": self._pacer.stats() if self._pacer is not None else None,
             "send_ms": round(s.send_ms, 2), "packets_per_frame": self._packets_per_frame(),
             "brightness": self._brightness,
             "software_brightness": self._software_brightness(),
@@ -485,6 +597,9 @@ class ColorlightDriver(OutputDriver):
         sock = self._sock
         assert sock is not None
         self._build(sock)
+        if self.options.pace:
+            sys.setswitchinterval(min(sys.getswitchinterval(), SWITCH_INTERVAL))
+            _raise_thread_priority()
         soft_lut = None
         next_link = 0.0
         next_detect = 0.0
@@ -590,11 +705,18 @@ class ColorlightDriver(OutputDriver):
             q = sock.queued_bytes()
             done = time.perf_counter()
         target = min(done + self.options.sync_gap_ms / 1000.0, limit)
-        delay = target - time.perf_counter()
-        if delay > 0:
-            time.sleep(delay)
+        pacer = self._pacer
+        if pacer is not None:
+            target = pacer.slot(max(target, time.perf_counter()))
+            wait_until(target)
+        else:
+            delay = target - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
         sock.transmit(self._sync_batch)
         t1 = time.perf_counter()
+        if pacer is not None:
+            pacer.shown(t1)
         s = self._stats
         s.frames += 1
         s.send_ms = (t1 - t0) * 1000 if s.frames == 1 else 0.9 * s.send_ms + 0.1 * (t1 - t0) * 1000

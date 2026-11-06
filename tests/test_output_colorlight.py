@@ -573,3 +573,89 @@ def test_detect_helper_stops_at_first_silent_index():
     found = cl.detect(sock, timeout=0.05)
     assert [r.index for r in found] == [0]
     assert [p[16] for p in sock.sent] == [0, 1]
+
+
+# ------------------------------------------------------------------ pacing
+def test_pacer_puts_jittery_frames_on_an_even_grid():
+    P, m = 1 / 30, 0.0015
+    pacer = cl.Pacer(P, m)
+    rng = np.random.default_rng(1)
+    slots = []
+    for k in range(300):
+        ready = 10.0 + k * P + 0.004 + rng.uniform(-0.001, 0.001)     # render and send times vary
+        slot = pacer.slot(ready)
+        assert slot >= ready + m / 4 - 1e-12
+        slots.append(slot)
+    gaps = np.diff(slots[100:])
+    assert np.allclose(gaps, P, atol=1e-9)                              # settled: exactly one period apart
+    assert pacer.moves <= 4
+
+
+def test_pacer_moves_later_for_a_late_frame_and_earlier_when_there_is_room():
+    P, m = 1 / 60, 0.0015
+    h = P / 2                                               # the headroom at 60 fps
+    t = [100.0 + k * P for k in range(1000)]
+    delay = lambda pacer: (pacer.grid0 - t[0]) % P          # from a frame being ready to its slot
+    pacer = cl.Pacer(P, m)
+    assert pacer.headroom == pytest.approx(h)
+    for x in t[:10]:
+        assert pacer.slot(x) == pytest.approx(x + h)
+    for x in t[10:20]:                                      # a few ms late: absorbed, nothing moves
+        assert pacer.slot(x + 0.005) == pytest.approx(x + h)
+    late = pacer.slot(t[20] + h - 0.001)                    # within 1 ms of missing: the grid moves later
+    assert late == pytest.approx(t[20] + 2 * h - 0.001) and pacer.moves == 1
+    for x in t[21:]:                                        # on time again: back to the headroom, once
+        pacer.slot(x)
+    assert pacer.moves == 2 and delay(pacer) == pytest.approx(h)
+
+    pacer = cl.Pacer(P, m)
+    pacer.slot(t[0] + 0.006)                               # the first frame was slow: the grid starts late
+    for x in t[1:]:                                         # the others have room to spare: less delay
+        assert pacer.slot(x) >= x + m - 1e-12
+    assert delay(pacer) == pytest.approx(h) and pacer.moves == 1
+    assert cl.Pacer(1 / 30, m).headroom == 0.012
+
+
+def test_pacer_statistics():
+    pacer = cl.Pacer(0.02, 0.001)
+    assert pacer.stats() == {}
+    for t in (1.0, 1.0201, 1.0399, 1.08):                  # the last one skipped a slot (a held picture)
+        pacer.shown(t)
+    st = pacer.stats()
+    assert st["period_ms"] == 20.0 and st["worst_ms"] == pytest.approx(0.2, abs=1e-6)
+
+
+class TimedSocket(FakeSocket):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.shows: list[float] = []
+
+    def transmit(self, batch):
+        buf, spans = batch
+        if buf[spans[0][0] + 12] == cl.TYPE_DISPLAY:
+            self.shows.append(time.perf_counter())
+        super().transmit(batch)
+
+
+def test_driver_paces_display_packets():
+    sock = TimedSocket(answer=reply())
+    drv = make_driver(sock)
+    drv.set_frame_rate(50)
+    drv.open()
+    try:
+        assert wait_for(lambda: drv.status()["receiver_found"])
+        rng = np.random.default_rng(3)
+        start = time.perf_counter()
+        for k in range(60):                                 # sent at uneven times around a 20 ms beat
+            target = start + k * 0.02 + rng.uniform(0, 0.004)
+            while time.perf_counter() < target:
+                time.sleep(0.0005)
+            drv.send(np.full((config.H, config.W, 3), k, np.uint8))
+        assert wait_for(lambda: len(sock.shows) >= 55)
+        gaps = np.diff(sock.shows[10:]) / 0.02
+        assert np.all(np.abs(gaps - np.round(gaps)) < 0.1)  # whole periods, within 2 ms even on a busy CI
+        assert drv.status()["pacing"]["period_ms"] == 20.0
+        drv.set_frame_rate(0)                               # no rate: no pacing
+        assert drv.status()["pacing"] is None
+    finally:
+        drv.close()

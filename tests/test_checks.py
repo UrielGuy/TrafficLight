@@ -154,6 +154,14 @@ def test_a_held_still_picture_is_explained():
     assert c["level"] == "ok" and "still picture" in c["detail"]
 
 
+def test_paced_frames_report_their_timing():
+    st = {"driver": "colorlight", "ok": True, "error": None, "open": True, "link": True, "link_mbps": 1000,
+          "receiver": None, "problems": [], "detecting": True, "sent_fps": 30.0, "holding": False,
+          "pacing": {"period_ms": 33.333, "jitter_ms": 0.081, "worst_ms": 1.2, "moves": 1}, "interface_name": "eth1"}
+    d = by_id(setup_checks(COLORLIGHT, st, AUDIO_OK))["output.driver"]["detail"]
+    assert d.startswith("Sending 30 frames per second.") and "±0.08 ms" in d and "worst 1.2 ms" in d
+
+
 def test_receiver_configured_for_another_size():
     # 1376x688 is what the user's card reported before its LEDVision setup.
     c = driver_checks(FakeSocket(answer=reply(size=(1376, 688))), ready=lambda st: st["receiver_found"])

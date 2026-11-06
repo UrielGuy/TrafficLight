@@ -166,6 +166,10 @@ def card_preview(settings: Settings) -> np.ndarray:
         return np.zeros((config.H, config.W, 3), np.uint8)
 
 
+def _frame_rate(settings: Settings) -> int:
+    return max(1, min(240, int(settings.fps or 60)))
+
+
 def _failure(e: Exception, msg: str) -> dict[str, Any]:
     if isinstance(e, OutputError):
         return e.as_problem()
@@ -327,7 +331,7 @@ class Engine:
     def _run(self) -> None:
         deadline = time.perf_counter()
         while not self._stop.is_set():
-            period = 1.0 / max(1, min(240, int(self.env.settings.fps or 60)))
+            period = 1.0 / _frame_rate(self.env.settings)
             t0 = time.perf_counter()
             try:
                 self.step()
@@ -701,6 +705,8 @@ class Engine:
                     self._safe(lambda: self._driver.set_brightness(new.output.brightness), "set_brightness")
                 else:
                     self._open_driver(new, now)
+            if (first or new.fps != old.fps) and self._driver is not None:
+                self._safe(lambda: self._driver.set_frame_rate(_frame_rate(new)), "set_frame_rate")
             if first or new.audio.device != old.audio.device:
                 self._safe(lambda: self.audio.set_device(new.audio.device), "audio set_device")
             if first or new.audio.volume != old.audio.volume:
@@ -722,6 +728,7 @@ class Engine:
             d = self._driver_factory(settings.output)
             d.open()
             d.set_brightness(settings.output.brightness)
+            d.set_frame_rate(_frame_rate(settings))
         except Exception as e:
             msg = str(e) or type(e).__name__
             if msg != self._driver_error:

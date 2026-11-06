@@ -41,6 +41,9 @@ class OutputDriver:
     def set_brightness(self, value: float) -> None:
         """0..1."""
 
+    def set_frame_rate(self, fps: float) -> None:
+        """How often the engine sends frames (Settings.fps), for drivers that pace their output."""
+
     def close(self) -> None: ...
 
     def status(self) -> dict[str, Any]:

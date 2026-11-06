@@ -388,6 +388,7 @@ class OutputDriver:
     def send(self, frame): ...          # (384,128,3) RGB, mapped by the driver (order, flips, rotation, colours)
     def send_card(self, image): ...     # (CARD_H,128,3) RGB already in the card's layout: colour order, gamma,
                                         # brightness only (the wiring picture); NullDriver ignores it
+    def set_frame_rate(self, fps): ...  # Settings.fps, from the engine; Colorlight paces its display packets on it
     def status(self) -> dict: ...       # {"driver", "ok", "error", "interface", ..., "problems": [check-shaped dicts]}
 class OutputError(RuntimeError):        # OutputError(detail, fix, check="output.access", title=...): str() is the
                                         # whole message; as_problem() the check entry
