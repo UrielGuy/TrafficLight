@@ -16,9 +16,10 @@ import pytest
 from PIL import Image
 
 from test_media import make_audio, make_gif, make_video, read_index, upload
+from trafficlight import config
 from trafficlight.media import MediaLibrary
 from trafficlight.media import library as library_mod
-from trafficlight.media.download import DownloadError, Fetched, choose, explain, merge
+from trafficlight.media.download import DownloadError, Fetched, Probed, choose, explain, merge
 from trafficlight.media.ingest import crop_rect
 from trafficlight.model import MediaEdit
 
@@ -466,7 +467,7 @@ def test_import_from_a_link(tmp_path, monkeypatch):
     lib = MediaLibrary(tmp_path / "media", fetcher=fake)
     try:
         m = lib.import_url("https://video.example/watch?v=1", max_height=720, start=0.25, duration=0.5)
-        assert m.status == "processing" and m.stage == "downloading" and m.name == "video.example"
+        assert m.status == "processing" and m.stage == "queued" and m.name == "video.example"
         assert m.source_url == "https://video.example/watch?v=1"
         r = lib.wait_ready(m.id, 30)
         assert r.status == "ready", r.error
@@ -512,6 +513,49 @@ def test_delete_during_download(tmp_path):
             time.sleep(0.05)
         assert not (lib.root / m.id).exists() and lib.get(m.id) is None
     finally:
+        lib.close()
+
+
+def test_probe_without_a_site_knows_nothing():
+    from trafficlight.media.download import probe
+    assert probe("ftp://x.example/a.mp4") == Probed()
+
+
+def test_links_download_one_at_a_time_in_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(library_mod, "_PROGRESS_EVERY", 0.0)
+    gate = threading.Event()
+    running, most = [0], [0]
+    lock = threading.Lock()
+
+    class Counting(FakeFetch):
+        def __call__(self, *a, **k):
+            with lock:
+                running[0] += 1
+                most[0] = max(most[0], running[0])
+            try:
+                gate.wait(10)                   # the first one holds the line until the test has looked
+                return super().__call__(*a, **k)
+            finally:
+                with lock:
+                    running[0] -= 1
+
+    fake = Counting(tmp_path)
+    lib = MediaLibrary(tmp_path / "media", fetcher=fake)
+    try:
+        ms = [lib.import_url(f"https://video.example/{i}") for i in range(3)]
+        assert all(m.stage == "queued" for m in ms)
+        end = time.monotonic() + 5
+        while lib.get(ms[0].id).stage != "downloading" and time.monotonic() < end:
+            time.sleep(0.01)
+        assert [lib.get(m.id).stage for m in ms] == ["downloading", "queued", "queued"]
+        gate.set()
+        for m in ms:
+            assert lib.wait_ready(m.id, 30).status == "ready"
+        assert most[0] == 1
+        assert [c["url"] for c in fake.calls] == [m.source_url for m in ms]
+        assert all(c["max_height"] == config.IMPORT_HEIGHT for c in fake.calls)
+    finally:
+        gate.set()
         lib.close()
 
 

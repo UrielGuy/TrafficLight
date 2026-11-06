@@ -304,6 +304,16 @@ def create_app(data_dir: Optional[Path] = None, *, store: Optional[Store] = None
     def get_media(media_id: str) -> dict:
         return media_item(media_id).model_dump()
 
+    @app.post("/api/media/probe")
+    def probe_media(body: dict = Body(...)) -> dict:
+        # A plain def: FastAPI runs it on a worker thread, and asking the site takes seconds.
+        lib = need_media()
+        url = body.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise HTTPException(422, "url: a web link")
+        p = lib.probe(url.strip())
+        return {"title": p.title, "duration": p.duration, "warn_over": config.IMPORT_WARN_SECONDS}
+
     @app.post("/api/media/import")
     def import_media(body: dict = Body(...)) -> dict:
         lib = need_media()
@@ -311,7 +321,7 @@ def create_app(data_dir: Optional[Path] = None, *, store: Optional[Store] = None
         if not isinstance(url, str) or not url.strip():
             raise HTTPException(422, "url: a web link")
         try:
-            max_height = int(body.get("max_height") or 1080)
+            max_height = int(body.get("max_height") or config.IMPORT_HEIGHT)
             start = float(body.get("start") or 0.0)
             duration = body.get("duration")
             duration = None if duration in (None, "") else float(duration)

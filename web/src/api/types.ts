@@ -120,13 +120,22 @@ export interface MediaItem {
   source_url: string | null;
   /** 0..1 while processing. */
   progress: number;
-  /** While processing: "waiting", "downloading", "converting", "preparing the crop view". */
+  /** While processing: "queued" (a link waiting for the download before it), "downloading", "waiting", "converting",
+   * "preparing the crop view". */
   stage: string;
+}
+/** Answer of POST /api/media/probe: what is known about a link's video before downloading it. */
+export interface MediaProbe {
+  title: string | null;
+  /** Seconds; null when it cannot be found out beforehand (direct file links, unknown sites). */
+  duration: number | null;
+  /** config.IMPORT_WARN_SECONDS: ask before downloading more than this. */
+  warn_over: number;
 }
 /** Body of POST /api/media/import. */
 export interface MediaImport {
   url: string;
-  /** The "1080" of 1080p (shorter side). */
+  /** The "480" of 480p (shorter side); default 480 (config.IMPORT_HEIGHT). */
   max_height?: number;
   start?: number;
   duration?: number | null;

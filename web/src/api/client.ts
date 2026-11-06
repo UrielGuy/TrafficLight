@@ -1,7 +1,7 @@
 // Typed wrappers for every REST route in docs/ARCHITECTURE.md ("HTTP API").
 // Failures throw ApiError whose message is the server's `detail`.
 import type {
-  AudioDevice, Catalog, MediaEdit, MediaImport, MediaItem, NetInterface, NewSet, Peaks, Problem, SetData, SetSummary,
+  AudioDevice, Catalog, MediaEdit, MediaImport, MediaItem, MediaProbe, NetInterface, NewSet, Peaks, Problem, SetData, SetSummary,
   Settings, SettingsPatch, ShowTarget, State, TestPattern,
 } from './types';
 
@@ -92,6 +92,8 @@ export const api = {
   editMedia: (id: string, edit: MediaEdit) => request<MediaItem>('PATCH', `/api/media/${enc(id)}`, { edit }),
   duplicateMedia: (id: string, name?: string) => request<MediaItem>('POST', `/api/media/${enc(id)}/duplicate`, name ? { name } : {}),
   importMedia: (body: MediaImport) => request<MediaItem>('POST', '/api/media/import', body),
+  /** Title and length of a link's video, without downloading it (takes a second or two). */
+  probeMedia: (url: string) => request<MediaProbe>('POST', '/api/media/probe', { url }),
   /** Without `force` the server answers 409 (ApiError.status === 409) when sets use the item. */
   deleteMedia: (id: string, force = false) => request<Ok>('DELETE', `/api/media/${enc(id)}${force ? '?force=1' : ''}`),
   mediaPeaks: (id: string) => request<Peaks>('GET', `/api/media/${enc(id)}/peaks`),

@@ -17,6 +17,7 @@ from test_player_fakes import FakeAudio, FakeDriver
 from trafficlight import config
 from trafficlight.media import MediaLibrary
 from trafficlight.media import library as library_mod
+from trafficlight.media.download import Probed
 from trafficlight.server import create_app
 
 
@@ -24,7 +25,8 @@ from trafficlight.server import create_app
 def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(library_mod, "_SWEEP_SECONDS", 0.1)
     fetch = FakeFetch(tmp_path)
-    lib = MediaLibrary(tmp_path / "data" / "media", fetcher=fetch)
+    lib = MediaLibrary(tmp_path / "data" / "media", fetcher=fetch,
+                       prober=lambda url: Probed("Long one", 600.0) if "long" in url else Probed())
     app = create_app(tmp_path / "data", media=lib, audio=FakeAudio(), driver_factory=lambda s: FakeDriver(s),
                      web_dist=tmp_path / "dist")
     with TestClient(app) as client:
@@ -57,12 +59,20 @@ def frame_of(rig, set_id: str, t: float = 0.1) -> np.ndarray:
     return np.asarray(Image.open(io.BytesIO(r.content)).convert("RGB"))
 
 
+def test_probe_route(rig):
+    r = rig.post("/api/media/probe", json={"url": "https://video.example/long"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"title": "Long one", "duration": 600.0, "warn_over": config.IMPORT_WARN_SECONDS}
+    assert rig.post("/api/media/probe", json={"url": "https://x.example/f.mp4"}).json()["duration"] is None
+    assert rig.post("/api/media/probe", json={}).status_code == 422
+
+
 def test_import_route(rig):
     r = rig.post("/api/media/import", json={"url": "https://video.example/v", "max_height": 720, "start": 1.5,
                                             "duration": 4})
     assert r.status_code == 200, r.text
     m = r.json()
-    assert m["status"] == "processing" and m["stage"] == "downloading" and m["source_url"] == "https://video.example/v"
+    assert m["status"] == "processing" and m["stage"] == "queued" and m["source_url"] == "https://video.example/v"
     done = wait(rig, m["id"])
     assert done["status"] == "ready" and done["name"] == "A video"
     assert rig.fetch.calls[-1] == {"url": "https://video.example/v", "max_height": 720, "start": 1.5, "duration": 4.0}

@@ -30,6 +30,7 @@ from urllib.parse import unquote, urlparse
 
 import av
 
+from .. import config
 from .ingest import ACCEPTED_EXTS, Cancelled, IngestError, _visual_streams, short_error
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,15 @@ class Fetched:
 
 
 Fetcher = Callable[..., Fetched]
+
+
+@dataclass
+class Probed:
+    title: Optional[str] = None
+    duration: Optional[float] = None   # seconds; None = not known before downloading
+
+
+Prober = Callable[[str], Probed]
 
 
 def _nothing(*_a) -> None:
@@ -470,7 +480,7 @@ def _direct(url: str, work: Path, progress: Progress, check: Check) -> Optional[
         r.close()
 
 
-def fetch(url: str, work: Path, *, max_height: int = 1080, start: float = 0.0, duration: Optional[float] = None,
+def fetch(url: str, work: Path, *, max_height: int = config.IMPORT_HEIGHT, start: float = 0.0, duration: Optional[float] = None,
           progress: Progress = _nothing, check: Check = _nothing) -> Fetched:
     """Download the video behind `url` into the folder `work` (it is created). DownloadError with a
     readable message when that is not possible; Cancelled when `check` says so."""
@@ -534,6 +544,36 @@ def fetch(url: str, work: Path, *, max_height: int = 1080, start: float = 0.0, d
             except OSError:
                 pass
     return Fetched(merged, title, start - cut, None if duration is None else start - cut + duration)
+
+
+def probe(url: str) -> Probed:
+    """Title and length of the video behind `url`, without downloading it. Whatever cannot be found out is
+    None (a direct file link, a site yt-dlp does not know, no internet): the import itself reports what is
+    wrong, this only feeds the "that is a long video" question."""
+    if urlparse(url).scheme.lower() not in ("http", "https"):
+        return Probed()
+    try:
+        import yt_dlp
+        with yt_dlp.YoutubeDL(_options()) as y:
+            info = y.extract_info(url, download=False, process=False)
+            # Unprocessed, a link can stand for another one (a video in a playlist link) or for a list:
+            # follow it to the first video, as the import does.
+            for _ in range(3):
+                kind = info.get("_type")
+                if kind in ("playlist", "multi_video"):
+                    info = next((e for e in (info.get("entries") or []) if e), None)
+                    if info is None:
+                        return Probed()
+                elif kind in ("url", "url_transparent") and not info.get("duration") and info.get("url"):
+                    info = y.extract_info(info["url"], download=False, process=False)
+                else:
+                    break
+    except Exception as e:
+        log.info("could not look up %s: %s", url, e)
+        return Probed()
+    d = info.get("duration")
+    title = info.get("title")
+    return Probed(str(title) if title else None, float(d) if isinstance(d, (int, float)) and d > 0 else None)
 
 
 def _has_picture(path: Path) -> bool:

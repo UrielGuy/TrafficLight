@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlparse
 
+from .. import config
 from ..model import MediaEdit, MediaItem, new_id
 from . import ingest
 from .ingest import Cancelled, IngestError
@@ -59,10 +60,11 @@ def _default_fetcher():
 
 
 class MediaLibrary:
-    def __init__(self, root: Path, fetcher: Optional[Callable] = None):
+    def __init__(self, root: Path, fetcher: Optional[Callable] = None, prober: Optional[Callable] = None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._fetch = fetcher
+        self._probe = prober
         self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
         self._io = threading.Lock()
@@ -217,7 +219,7 @@ class MediaLibrary:
         self._queue.put(mid)
         return item.model_copy(deep=True)
 
-    def import_url(self, url: str, *, max_height: int = 1080, start: float = 0.0,
+    def import_url(self, url: str, *, max_height: int = config.IMPORT_HEIGHT, start: float = 0.0,
                    duration: Optional[float] = None, name: Optional[str] = None) -> MediaItem:
         """A new item fetched from a link on the download thread, then prepared like an upload.
         ValueError for something that is not a web link."""
@@ -229,7 +231,7 @@ class MediaLibrary:
         (self.root / mid).mkdir(parents=True)
         label = (name or "").strip()
         item = MediaItem(id=mid, name=label or (u.hostname or url), kind="video", status="processing",
-                         added=time.time(), source_url=url, stage="downloading")
+                         added=time.time(), source_url=url, stage="queued")
         job = {"max_height": int(max_height), "start": max(0.0, float(start or 0.0)),
                "duration": None if duration is None else float(duration)}
         with self._lock:
@@ -242,6 +244,14 @@ class MediaLibrary:
         self._save(mid)
         self._downloads.put((mid, job))
         return item.model_copy(deep=True)
+
+    def probe(self, url: str):
+        """download.Probed: title and length of a link's video, as far as they can be found out without
+        downloading it (slow: it asks the site). Unknowns are None."""
+        if self._probe is not None:
+            return self._probe(url)
+        from .download import probe
+        return probe(url)
 
     def update(self, media_id: str, *, name: Optional[str] = None, edit: Optional[MediaEdit] = None) -> MediaItem:
         """Rename and / or change the edit. A changed edit re-makes the prepared files from the original
@@ -365,10 +375,10 @@ class MediaLibrary:
         """(lock held) Throw away work in progress for the item and queue it again."""
         self._jobs[mid] = self._jobs.get(mid, 0) + 1
         m.error = None
-        if m.status == "processing" and m.stage == "downloading":
+        if m.status == "processing" and m.stage in ("queued", "downloading"):
             return                                # the download hands it to the ingest when done
         if mid not in self._originals and mid in self._imports:
-            m.status, m.progress, m.stage = "processing", 0.0, "downloading"     # a failed import: try again
+            m.status, m.progress, m.stage = "processing", 0.0, "queued"     # a failed import: try again
             self._downloads.put((mid, self._imports[mid]))
             return
         m.status, m.progress, m.stage = "processing", 0.0, "waiting"
@@ -450,7 +460,7 @@ class MediaLibrary:
                     m.stage, m.progress = "waiting", 0.0
                     self._queue.put(m.id)
                 elif m.id in self._imports:
-                    m.stage, m.progress = "downloading", 0.0
+                    m.stage, m.progress = "queued", 0.0
                     self._downloads.put((m.id, self._imports[m.id]))
                 else:
                     m.status, m.error = "error", "The upload was lost during a restart"
@@ -577,11 +587,14 @@ class MediaLibrary:
                 return
             url = m.source_url
             check = self._checker_any(mid)
+            # One link at a time: the others stay "queued" until the worker gets to them.
+            m.stage, m.progress = "downloading", 0.0
+            self._bump()
         work = self.root / mid / "download"
         fetch = self._fetch or _default_fetcher()
         t0 = time.monotonic()
         try:
-            got = fetch(url, work, max_height=job.get("max_height", 1080), start=job.get("start", 0.0),
+            got = fetch(url, work, max_height=job.get("max_height", config.IMPORT_HEIGHT), start=job.get("start", 0.0),
                         duration=job.get("duration"), progress=self._reporter(mid, None, 0.0, 1.0), check=check)
             check()
             kind = self._kind_of(got.path)

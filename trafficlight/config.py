@@ -22,6 +22,14 @@ FACE_RADIUS = FACE / 2    # the lit disc fills its 128 px box edge to edge
 RING_WIDTH = 2.0      # outline ring of an unlit light
 TEXT_RADIUS = 61.0    # text is fitted inside this: a small margin to the light's edge, and the old sign's layouts
 
+# Link imports fetch up to this ("480" of 480p) unless asked otherwise. The sign is 128x384, so 480 lines
+# cover even a whole-sign crop of the full picture height without enlarging it; more only helps a crop that
+# zooms into a small part of the picture, and costs download time and disk.
+IMPORT_HEIGHT = 480
+# The import page asks "are you sure?" before downloading more than this many seconds of a video: a show
+# clip is rarely longer, and a whole concert costs minutes of download and gigabytes of disk.
+IMPORT_WARN_SECONDS = 240.0
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = REPO_ROOT / "assets"
 FONTS_DIR = ASSETS_DIR / "fonts"

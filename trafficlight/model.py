@@ -182,5 +182,6 @@ class MediaItem(BaseModel):
     source_height: int = 0
     source_url: Optional[str] = None   # where it was imported from, if from a link
     progress: float = 0.0              # 0..1 while status is "processing"
-    stage: str = ""                    # what is happening while processing: "waiting", "downloading", "converting",
+    stage: str = ""                    # what is happening while processing: "queued" (a link waiting for the
+                                       # downloads before it), "downloading", "waiting", "converting",
                                        # "preparing the crop view"

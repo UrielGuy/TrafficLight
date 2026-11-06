@@ -136,6 +136,7 @@ export default function MediaPage() {
       {media && media.length === 0 && uploads.length === 0 && <Empty>The library is empty.</Empty>}
       <div className="media-grid">
         {media?.map((m) => {
+          const ahead = queuedAhead(media, m);
           const visual = m.kind !== 'audio';
           const playable = m.status === 'ready' || (m.status === 'processing' && m.version > 0);
           const note = editNote(m);
@@ -148,7 +149,11 @@ export default function MediaPage() {
               </div>
               <div className="name ellipsis" title={m.name}>{m.name}</div>
               {note && <div className="edit-note" data-testid="edit-note">{note}</div>}
-              {m.status === 'processing' ? (
+              {m.status === 'processing' && ahead !== null ? (
+                <div className="media-progress" data-testid="media-queued">
+                  <div className="small muted">{ahead === 0 ? 'Next to download' : `Queued: ${ahead} ${ahead === 1 ? 'download' : 'downloads'} before it`}</div>
+                </div>
+              ) : m.status === 'processing' ? (
                 <div className="media-progress" data-testid="media-progress">
                   <div className="progress"><div style={{ width: `${Math.round(m.progress * 100)}%` }} /></div>
                   <div className="small muted">{stageText(m)} {Math.round(m.progress * 100)}%</div>
@@ -191,6 +196,14 @@ export default function MediaPage() {
   );
 }
 
+/** For a link waiting its turn: how many downloads come before it (the server fetches one link at a time, in the
+ * order they were added); null for anything else. */
+function queuedAhead(all: MediaItem[], m: MediaItem): number | null {
+  if (m.status !== 'processing' || m.stage !== 'queued') return null;
+  const busy = all.some((x) => x.status === 'processing' && x.stage === 'downloading') ? 1 : 0;
+  return busy + all.filter((x) => x.status === 'processing' && x.stage === 'queued' && (x.added < m.added || (x.added === m.added && x.id < m.id))).length;
+}
+
 function stageText(m: MediaItem): string {
   const s = m.stage || 'waiting';
   const words: Record<string, string> = {
@@ -202,15 +215,44 @@ function stageText(m: MediaItem): string {
 
 const QUALITIES = [360, 480, 720, 1080, 1440, 2160];
 
-const IMPORT_PREF = 'trafficlight.import';
+/** config.IMPORT_HEIGHT: 480 lines cover even a whole-sign crop of the full picture height. */
+const DEFAULT_QUALITY = 480;
+
+// v2: the default dropped from 1080p to 480p; a quality remembered under the old key was most likely just the old
+// default, so only the length limit is carried over from it.
+const IMPORT_PREF = 'trafficlight.import.v2';
+const OLD_IMPORT_PREF = 'trafficlight.import';
 /** Quality and length limit of the last import: someone who wants 3 minutes of a 3 hour video wants that every time. */
 function readImportPref(): { quality: number; length: string } {
   try {
-    const v = JSON.parse(localStorage.getItem(IMPORT_PREF) ?? '{}') ?? {};
-    return { quality: QUALITIES.includes(v.quality) ? v.quality : 1080, length: typeof v.length === 'string' ? v.length : '' };
+    const v = JSON.parse(localStorage.getItem(IMPORT_PREF) ?? 'null');
+    if (v) return { quality: QUALITIES.includes(v.quality) ? v.quality : DEFAULT_QUALITY, length: typeof v.length === 'string' ? v.length : '' };
+    const old = JSON.parse(localStorage.getItem(OLD_IMPORT_PREF) ?? '{}') ?? {};
+    return { quality: DEFAULT_QUALITY, length: typeof old.length === 'string' ? old.length : '' };
   } catch {
-    return { quality: 1080, length: '' };
+    return { quality: DEFAULT_QUALITY, length: '' };
   }
+}
+
+/** Asks "are you sure?" when the part of the video that would be downloaded is longer than the server's limit
+ * (config.IMPORT_WARN_SECONDS). True to go ahead; also when the length cannot be found out beforehand. */
+async function longVideoOk(url: string, start: number, maxLength: number | null): Promise<boolean> {
+  let p;
+  try {
+    p = await api.probeMedia(url);
+  } catch {
+    return true;                        // the import itself says what is wrong with the link
+  }
+  if (p.duration === null) return true;
+  const rest = Math.max(0, p.duration - start);
+  const get = maxLength === null ? rest : Math.min(rest, maxLength);
+  if (get <= p.warn_over) return true;
+  const part = get < p.duration - 0.5 ? `${formatTime(get)} of it` : 'all of it';
+  return confirmDialog(`This video is ${formatTime(p.duration)} long`, {
+    text: `${p.title ? `"${p.title}": ` : ''}that downloads ${part}, which takes a while and fills the disk. `
+      + 'To take only part, cancel and set a Max length (and Start at). Download it anyway?',
+    action: 'Download anyway',
+  });
 }
 
 /** Fetch a video from a link (YouTube and the like, or a direct file link). */
@@ -219,7 +261,7 @@ function ImportForm({ onImported }: { onImported: (m: MediaItem) => void }) {
   const [quality, setQuality] = useState(() => readImportPref().quality);
   const [start, setStart] = useState('');
   const [length, setLength] = useState(() => readImportPref().length);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<false | 'checking' | 'starting'>(false);
   const s = parseClock(start);
   const l = parseClock(length);
   const badStart = s !== null && isNaN(s);
@@ -228,7 +270,12 @@ function ImportForm({ onImported }: { onImported: (m: MediaItem) => void }) {
     e.preventDefault();
     const u = url.trim();
     if (!u || badStart || badLength) return;
-    setBusy(true);
+    setBusy('checking');
+    if (!(await longVideoOk(u, s ?? 0, l))) {
+      setBusy(false);
+      return;
+    }
+    setBusy('starting');
     try {
       localStorage.setItem(IMPORT_PREF, JSON.stringify({ quality, length: length.trim() }));
     } catch {
@@ -237,7 +284,8 @@ function ImportForm({ onImported }: { onImported: (m: MediaItem) => void }) {
     const m = await attempt(() => api.importMedia({ url: u, max_height: quality, start: s ?? 0, duration: l }));
     setBusy(false);
     if (m) {
-      setUrl('');
+      // A link typed in while this one was being checked stays for the next import.
+      setUrl((cur) => (cur.trim() === u ? '' : cur));
       setStart('');
       onImported(m);
     }
@@ -247,7 +295,7 @@ function ImportForm({ onImported }: { onImported: (m: MediaItem) => void }) {
       <div className="import-row">
         <input type="url" inputMode="url" placeholder="Paste a video link (YouTube, a file…)" value={url} onChange={(e) => setUrl(e.target.value)}
           aria-label="Video link" data-testid="import-url" />
-        <button className="primary" type="submit" disabled={busy || !url.trim() || badStart || badLength} data-testid="import-go">{busy ? 'Starting…' : 'Import'}</button>
+        <button className="primary" type="submit" disabled={Boolean(busy) || !url.trim() || badStart || badLength} data-testid="import-go">{busy === 'checking' ? 'Checking…' : busy ? 'Starting…' : 'Import'}</button>
       </div>
       <div className="import-opts">
         <label>Max length
@@ -259,7 +307,8 @@ function ImportForm({ onImported }: { onImported: (m: MediaItem) => void }) {
             aria-invalid={badStart} title="Where in the video to start: 1:30 or 90" data-testid="import-start" />
         </label>
         <label>Up to
-          <select value={quality} onChange={(e) => setQuality(Number(e.target.value))} data-testid="import-quality">
+          <select value={quality} onChange={(e) => setQuality(Number(e.target.value))} data-testid="import-quality"
+            title="480p is plenty for the sign (128×384). Pick more only to crop into a small part of the picture.">
             {QUALITIES.map((q) => <option key={q} value={q}>{q}p</option>)}
           </select>
         </label>
