@@ -26,45 +26,65 @@ says what is missing.
 
 ## Raspberry Pi
 
-Raspberry Pi OS **Lite**, 64-bit (Bookworm or later), Pi 4 or 5, with ssh enabled. Use Lite: the
-service plays sound straight through ALSA, and on the desktop image PipeWire can hold the sound
-card. The Pi has no Node, so the web UI is built on the PC. The first install needs internet on the
-Pi (apt and pip); do it at home, not on the playa.
+Raspberry Pi OS **Lite**, 64-bit (Bookworm or later), Pi 4 or 5. Use Lite: the service plays sound
+straight through ALSA, and on the desktop image PipeWire can hold the sound card. The Pi has no
+Node, so the web UI is built on the PC. The first install needs internet on the Pi (apt and pip);
+do it at home, not on the playa.
 
-From the PC (WSL or Git Bash, in the repo):
+### From a blank SD card
 
-```
-scripts/update_pi.sh pi@raspberrypi.local
-```
+1. **Raspberry Pi Imager**: Raspberry Pi OS Lite (64-bit). In its OS customisation set a user name
+   and password, your **home Wi-Fi**, and under Services **enable SSH** (paste your public key,
+   `~/.ssh/id_ed25519.pub` in WSL, or allow the password).
+2. Boot the Pi and wait a minute. It joins the Wi-Fi; `ssh you@raspberrypi.local` should work
+   (or use the address your router shows). Connect over Wi-Fi rather than a cable: the Pi's
+   network socket becomes the LED card's.
+3. From the PC (WSL or Git Bash, in the repo), with the names you like:
 
-This is both the first install and every later update. It builds `web/dist`, copies the code and
-`web/dist` to `~/trafficlight` on the Pi, then runs `scripts/install_pi.sh` there, which installs the
-apt packages (`python3-venv`, `libportaudio2`), the venv and Python packages, and the `trafficlight`
-systemd service, and restarts it. Both scripts are safe to repeat. `--dry-run` lists what would be
-sent, `-d DIR` picks another directory, `--no-build` skips the web build. Set up ssh keys
-(`ssh-copy-id`) to avoid password prompts.
+   ```
+   scripts/update_pi.sh you@raspberrypi.local --hostname trafficlight \
+       --timezone America/Los_Angeles --hotspot TrafficLight
+   ```
 
-If you copy the repo by hand instead, build first (`cd web && npm run build`), copy the whole
-folder including `web/dist`, and run `bash scripts/install_pi.sh` on the Pi as your normal user.
+   It asks for the hotspot's password at the start, then builds the UI, copies everything,
+   installs, and prints where the UI is: `http://trafficlight.local:8080`.
+4. Plug the LED card into the Pi's network socket. **Settings → Setup** in the UI should show the
+   network port, then "Found card 10.75.c.d".
+5. Move the show: on the PC's UI, Dashboard → **Download everything**; on the Pi's UI, **Upload…**
+   that zip (sets, media and show settings).
 
-The service starts at boot, restarts on failure, runs as that user without any capabilities, and
-has the `audio` group.
-Logs are kept in RAM only (journald `Storage=volatile`) to spare the SD card:
+What `scripts/install_pi.sh` sets up on the Pi (all safe to repeat; updates keep it):
+
+* apt packages (`python3-venv`, `libportaudio2`), the venv and Python packages, the
+  `trafficlight` systemd service (starts at boot, restarts on failure, runs as your user without
+  any capabilities, with the `audio` group), logs in RAM only (journald `Storage=volatile`, to
+  spare the SD card), UDP socket buffers big enough for the LED driver.
+* **The LED card's port**: `eth0` gets 10.75.0.1/16 (NetworkManager profile `trafficlight-sign`,
+  no gateway, so the default route stays on Wi-Fi; `docs/HARDWARE.md` section 4). If your ssh
+  session runs over `eth0`, the profile takes over at the next reboot instead of cutting you off,
+  and if the Pi has no other connection it is not set up at all: connect Wi-Fi first.
+  `--sign-port IFACE` picks another port, `--no-sign-port` leaves the network alone.
+* `--hostname NAME`: the Pi is then `NAME.local`. Later updates use the new name.
+* `--timezone Zone/City`: the clock clip shows local time. The Pi has no battery-backed clock
+  (except a Pi 5 with its battery) and no internet on the playa: it keeps the time from its last
+  connection only while powered.
+* `--hotspot SSID` (`--hotspot-password PW`, or asked for): a Wi-Fi network of the Pi's own
+  (profile `trafficlight-hotspot`, WPA2), used only when no known Wi-Fi is in range. At home the
+  Pi stays on the home network; on the playa phones join the hotspot and open
+  `http://10.42.0.1:8080`. To switch by hand: `sudo nmcli connection up trafficlight-hotspot`
+  (and `down` to go back). There is no login: anyone on that network can control the sign.
+
+Every later update is the same command without the options: `scripts/update_pi.sh
+you@trafficlight.local`. `--dry-run` lists what would be sent, `-d DIR` picks another directory
+than `~/trafficlight`, `--no-build` skips the web build. If you copy the repo by hand instead, build
+first (`cd web && npm run build`), copy the whole folder including `web/dist`, and run
+`bash scripts/install_pi.sh [options]` on the Pi as your normal user.
 
 ```
 systemctl status trafficlight
 journalctl -u trafficlight -f
 sudo systemctl restart trafficlight
 ```
-
-The Pi's `eth0` is for the LED card (gigabit, direct cable, static address 10.75.0.1/16,
-`docs/HARDWARE.md` section 4). The phone or laptop reaches the UI
-over Wi-Fi: join the Pi's network, or make the Pi the access point
-(`sudo nmcli device wifi hotspot ssid TrafficLight password <8+ characters>`, then
-`nmcli connection modify Hotspot connection.autoconnect yes`), and open `http://<pi-address>:8080`
-(`http://raspberrypi.local:8080` where mDNS works). There is no login: anyone on that network can
-control the sign. The Pi has no battery-backed clock, so the clock clip shows the wrong time until the
-time is set; set the time zone with `sudo timedatectl set-timezone Zone/City`.
 
 Power can drop at any time. The app writes its files atomically, the root filesystem is ext4 (checked
 at boot), and the journal stays off the card. For more protection, enable the read-only overlay

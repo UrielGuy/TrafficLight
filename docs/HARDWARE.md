@@ -87,18 +87,19 @@ outside the port's network and the card is not found.
   server asks who is there from the port it listens on (UDP 5776), and
   Windows lets the answers to its own request in even where it drops
   unsolicited broadcasts.
-* **Raspberry Pi OS** (Bookworm and later use NetworkManager): a profile for
-  `eth0` that outranks the automatic "Wired connection 1":
+* **Raspberry Pi OS**: `scripts/install_pi.sh` sets it up (README, Raspberry Pi). By hand
+  (Bookworm and later use NetworkManager), a profile for `eth0` that outranks the automatic
+  "Wired connection 1":
 
   ```
-  sudo nmcli connection add type ethernet ifname eth0 con-name sign \
-      ipv4.method manual ipv4.addresses 10.75.0.1/16 ipv6.method disabled \
+  sudo nmcli connection add type ethernet ifname eth0 con-name trafficlight-sign \
+      ipv4.method manual ipv4.addresses 10.75.0.1/16 ipv4.never-default yes ipv6.method disabled \
       connection.autoconnect yes connection.autoconnect-priority 10
-  sudo nmcli connection up sign
+  sudo nmcli connection up trafficlight-sign
   ```
 
-  `ip -4 addr show eth0` then shows `inet 10.75.0.1/16`. Wi-Fi keeps the
-  default route.
+  `ip -4 addr show eth0` then shows `inet 10.75.0.1/16` (only while the card's cable has a link).
+  Wi-Fi keeps the default route.
 * In **Settings → LED output**, **Driver** is **Custom firmware** (the
   default; **None** sends nothing, for a computer without the sign) and
   **Card address** stays **Automatic**: the server takes the first card

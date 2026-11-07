@@ -4,24 +4,32 @@
 # any new Python packages and restarts the service. Also does the first install.
 # Run it from WSL or Git Bash on the PC.
 #
-#   scripts/update_pi.sh [-d REMOTE_DIR] [--no-build] [--dry-run] [user@]host
+#   scripts/update_pi.sh [-d REMOTE_DIR] [--no-build] [--dry-run] [user@]host [Pi setup options]
 #
 # REMOTE_DIR is relative to the Pi user's home (default: trafficlight). Data lives in
 # /var/lib/trafficlight on the Pi and is never touched. Needs ssh and tar on both sides.
+# Pi setup options, passed to install_pi.sh (see there): --hostname NAME, --timezone ZONE,
+# --hotspot SSID [--hotspot-password PW], --sign-port IFACE, --no-sign-port. Give them on the
+# first install; later updates keep what they set.
+# Example: scripts/update_pi.sh pi@raspberrypi.local --hostname trafficlight --timezone America/Los_Angeles
 set -euo pipefail
 
 remote_dir=trafficlight build=1 dry=0 host=
+setup=()       # for install_pi.sh
 while (( $# )); do
     case "$1" in
         -d) remote_dir="${2:?-d needs a directory}"; shift 2 ;;
         --no-build) build=0; shift ;;
         --dry-run) dry=1; shift ;;
-        -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --hostname|--timezone|--hotspot|--hotspot-password|--sign-port)
+            setup+=("$1" "${2:?$1 needs a value}"); shift 2 ;;
+        --no-sign-port) setup+=("$1"); shift ;;
+        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) echo "unknown option $1" >&2; exit 2 ;;
         *) host="$1"; shift ;;
     esac
 done
-[[ -n $host || $dry == 1 ]] || { echo "usage: $0 [-d REMOTE_DIR] [--no-build] [--dry-run] [user@]host" >&2; exit 2; }
+[[ -n $host || $dry == 1 ]] || { echo "usage: $0 [-d REMOTE_DIR] [--no-build] [--dry-run] [user@]host [Pi setup options]" >&2; exit 2; }
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -73,4 +81,4 @@ done
 rm -rf .incoming .old"
 
 echo "Installing and restarting on the Pi (may ask for the sudo password)"
-ssh -t "$host" "cd $q && bash scripts/install_pi.sh"
+ssh -t "$host" "cd $q && bash scripts/install_pi.sh${setup[*]:+ $(printf '%q ' "${setup[@]}")}"
