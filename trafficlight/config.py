@@ -12,6 +12,8 @@ FACE = 128            # one light's box is FACE x FACE; light i covers rows i*FA
 PANEL_W = 128
 PANEL_H = 64
 PANELS = 6
+# 1/32 scan: a row address lights panel row a (the R1/G1/B1 group) and row a + SCAN_ROWS (R2/G2/B2) together.
+SCAN_ROWS = PANEL_H // 2
 
 # The receiver card's image: one 64-row band per HUB75 connector, band b = connector J(b+1), from the top.
 # Bands without a panel are sent black; Settings.output.panel_order says which band each panel is on.

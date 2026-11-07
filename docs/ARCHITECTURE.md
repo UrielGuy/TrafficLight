@@ -50,6 +50,7 @@ web UI (React)  --REST + WebSocket-->  server (FastAPI)
 | `trafficlight/media/download.py` | Fetching a link with yt-dlp (as a library) and merging picture and sound with PyAV. |
 | `trafficlight/audio/` | `AudioEngine` contract (`base.py`) and the sounddevice mixer (`engine.py`). |
 | `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver, panel mapping (`mapping.py`), test patterns, the wiring rule (`wiring.py`: what the panels show → `panel_order` / `panel_flip`). |
+| `trafficlight/output/hub75/` | Host side of the custom card firmware (`docs/FIRMWARE.md` is its contract): visit schedule, bit-plane packer, UDP packets, behavioural model of the card. |
 | `trafficlight/checks.py` | The setup checks (`State.checks`), built from the output and audio statuses. |
 | `trafficlight/store.py` | Sets and settings on disk. |
 | `trafficlight/schedule.py` | Which set plays next (default set + random set). |
