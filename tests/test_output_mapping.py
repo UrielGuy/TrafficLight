@@ -7,7 +7,7 @@ import pytest
 
 from trafficlight import config
 from trafficlight.model import OutputSettings
-from trafficlight.output.mapping import Mapper, gamma_lut
+from trafficlight.output.mapping import Mapper
 
 PH = config.PANEL_H
 CARD = (config.CARD_H, config.W, 3)
@@ -28,16 +28,21 @@ def test_card_image_has_a_band_per_connector():
 
 def test_identity_is_a_copy_with_spare_bands_black(frame):
     m = Mapper(OutputSettings())
-    assert m.copy_only and m.lut is None
+    assert m.copy_only
     out = m.apply(frame)
     assert out.shape == CARD and np.array_equal(out[:config.H], frame)
     assert not out[config.H:].any()
 
 
-def test_identity_with_lut_blanks_spare_bands(frame):
-    out = np.full(CARD, 77, np.uint8)            # a reused buffer must not keep old bytes in the spare bands
-    Mapper(OutputSettings(gamma=2.2)).apply(frame, out)
-    assert np.array_equal(out[:config.H], gamma_lut(2.2)[frame]) and not out[config.H:].any()
+def test_identity_blanks_spare_bands_of_a_reused_buffer(frame):
+    out = np.full(CARD, 77, np.uint8)
+    Mapper(OutputSettings()).apply(frame, out)
+    assert np.array_equal(out[:config.H], frame) and not out[config.H:].any()
+
+
+def test_gamma_is_left_to_the_packer(frame):
+    out = Mapper(OutputSettings(gamma=2.2, color_order="bgr")).apply(frame)
+    assert np.array_equal(out[:config.H], frame[..., ::-1])
 
 
 def test_color_orders(frame):
@@ -117,20 +122,10 @@ def test_apply_card_skips_the_pixel_map():
     s = OutputSettings(panel_order=[7, 6, 5, 4, 3, 2], panel_flip=[True] * 6, rotate180=True,
                        color_order="brg", gamma=2.2)
     out = Mapper(s).apply_card(img)
-    assert np.array_equal(out, gamma_lut(2.2)[img[..., [2, 0, 1]]])
+    assert np.array_equal(out, img[..., [2, 0, 1]])
     assert np.array_equal(Mapper(OutputSettings()).apply_card(img), img)
     with pytest.raises(ValueError):
         Mapper(OutputSettings()).apply_card(img[:config.H])
-
-
-def test_gamma_lut(frame):
-    lut = gamma_lut(2.2)
-    assert lut[0] == 0 and lut[255] == 255 and lut[128] == round(255 * (128 / 255) ** 2.2)
-    assert np.all(np.diff(lut.astype(int)) >= 0)
-    out = Mapper(OutputSettings(gamma=2.2, color_order="bgr")).apply(frame)
-    assert np.array_equal(out[:config.H], lut[frame[..., ::-1]])
-    assert gamma_lut(1.0) is None
-    assert gamma_lut(1.0, 0.5)[255] == 128
 
 
 @pytest.mark.parametrize("bad", [dict(panel_order=[0, 0, 1, 2, 3, 4]), dict(panel_order=[0, 1, 2]),

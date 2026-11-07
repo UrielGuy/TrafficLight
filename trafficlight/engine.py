@@ -46,7 +46,7 @@ PNG_LIMIT = 32 * 1024      # a PNG bigger than this (video, noise) is sent as JP
 JPEG_QUALITY = 88
 JPEG_STICKY = 1.0          # after a frame went JPEG, re-try PNG this often (s)
 TEST_PATTERNS = ("off", "panels", "white", "red", "green", "blue", "gradient", "wiring")
-CARD_PATTERNS = ("wiring",)    # drawn in the receiver card's image (output/patterns.make_card)
+CARD_PATTERNS = ("wiring",)    # drawn in the card's image (output/patterns.make_card)
 
 
 # ---------------------------------------------------------------- preview frames
@@ -463,7 +463,6 @@ class Engine:
     def _output_status(self, settings: Settings) -> dict[str, Any]:
         d = self._driver
         st: dict[str, Any] = {"driver": settings.output.driver, "ok": False, "error": self._driver_error,
-                              "interface": settings.output.interface,
                               "problems": [self._driver_problem] if self._driver_problem else []}
         if d is not None:
             try:

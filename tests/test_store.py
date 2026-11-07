@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from trafficlight.model import Clip, Set
+from trafficlight.model import Clip, OutputSettings, Set, Settings
 from trafficlight.store import SetExists, Store, deep_merge
 
 
@@ -123,6 +123,25 @@ def test_corrupt_settings_fall_back(tmp_path):
     st = Store(tmp_path)
     assert st.settings().fps == 60
     assert (tmp_path / "settings.json.bad").exists()
+
+
+def test_settings_from_the_stock_firmware_days_load(tmp_path):
+    # A settings.json written while the "colorlight" driver existed: it must load (an unreadable one would be
+    # set aside as .bad and the sign would run on defaults, losing its wiring) and keep everything else.
+    old = Settings(output=OutputSettings(panel_order=[2, 7, 1, 0, 4, 3], panel_flip=[False, True] * 3,
+                                         brightness=0.35, gamma=1.6, color_order="bgr", rotate180=True),
+                   fps=30).model_dump(mode="json")
+    old["output"].update(driver="colorlight", interface="\\Device\\NPF_{6B1C}")
+    (tmp_path / "settings.json").write_text(json.dumps(old))
+    o = Store(tmp_path).settings().output
+    assert not (tmp_path / "settings.json.bad").exists()
+    assert o.driver == "fpga" and o.panel_order == [2, 7, 1, 0, 4, 3] and o.panel_flip == [False, True] * 3
+    assert (o.brightness, o.gamma, o.color_order, o.rotate180) == (0.35, 1.6, "bgr", True)
+    assert Store(tmp_path).settings().fps == 30
+    st = Store(tmp_path)
+    st.update_settings({"output": {"brightness": 0.4}})
+    saved = json.loads((tmp_path / "settings.json").read_text())["output"]
+    assert saved["driver"] == "fpga" and "interface" not in saved and saved["panel_order"] == [2, 7, 1, 0, 4, 3]
 
 
 def test_sets_using_media(store):

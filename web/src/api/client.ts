@@ -1,7 +1,7 @@
 // Typed wrappers for every REST route in docs/ARCHITECTURE.md ("HTTP API").
 // Failures throw ApiError whose message is the server's `detail`.
 import type {
-  AudioDevice, BundleKind, BundleResult, Catalog, MediaEdit, MediaImport, MediaItem, MediaProbe, NetInterface, NewSet, Peaks, Problem, SetData, SetSummary,
+  AudioDevice, BundleKind, BundleResult, Catalog, MediaEdit, MediaImport, MediaItem, MediaProbe, NewSet, Peaks, Problem, SetData, SetSummary,
   Settings, SettingsPatch, ShowTarget, State, TestPattern,
 } from './types';
 
@@ -76,7 +76,6 @@ export const api = {
   getSettings: () => request<Settings>('GET', '/api/settings'),
   patchSettings: (p: SettingsPatch) => request<Settings>('PATCH', '/api/settings', p),
   audioDevices: () => request<AudioDevice[]>('GET', '/api/audio/devices'),
-  outputInterfaces: () => request<NetInterface[]>('GET', '/api/output/interfaces'),
   outputTest: (pattern: TestPattern) => request<Ok>('POST', '/api/output/test', { pattern }),
 
   listMedia: () => request<MediaItem[]>('GET', '/api/media'),

@@ -1,6 +1,8 @@
-"""Test patterns and the bring-up tool's plumbing (no network)."""
+"""Test patterns and the bring-up tool (against a fake card on localhost)."""
 import numpy as np
 import pytest
+
+from fpga_fake import FakeCard, wait_for
 
 from trafficlight import config
 from trafficlight.model import OutputSettings, Settings
@@ -59,18 +61,26 @@ def test_panels_upside_down_is_distinguishable():
 
 
 def args(*a):
-    return testpattern.parser().parse_args(["--iface", "eth9", *a])
+    return testpattern.parser().parse_args(list(a))
 
 
 def test_build_settings_uses_saved_then_overrides(tmp_path, monkeypatch):
     monkeypatch.setenv("TRAFFICLIGHT_DATA", str(tmp_path))
-    saved = Settings(output=OutputSettings(color_order="bgr", panel_flip=[True] * 6, brightness=0.2))
+    saved = Settings(output=OutputSettings(color_order="bgr", panel_flip=[True] * 6, brightness=0.2,
+                                           card_address="10.75.3.4", driver="none"))
     (tmp_path / "settings.json").write_text(saved.model_dump_json())
     s = testpattern.build_settings(args())
-    assert s.color_order == "bgr" and s.panel_flip == [True] * 6 and s.interface == "eth9"
-    s = testpattern.build_settings(args("--order", "5,4,3,2,1,0", "--flip", "0,1,0,1,0,1", "--brightness", "0.3"))
+    assert s.color_order == "bgr" and s.panel_flip == [True] * 6 and s.card_address == "10.75.3.4"
+    assert s.driver == "fpga"
+    s = testpattern.build_settings(args("--order", "5,4,3,2,1,0", "--flip", "0,1,0,1,0,1", "--brightness", "0.3",
+                                        "--card", "", "--port", "6000"))
     assert s.panel_order == [5, 4, 3, 2, 1, 0] and s.panel_flip == [False, True] * 3 and s.brightness == 0.3
+    assert s.card_address == "" and s.card_port == 6000
     assert testpattern.build_settings(args("--raw")).color_order == "rgb"
+    with pytest.raises(ValueError):
+        testpattern.build_settings(args("--card", "10.75.0.2:80"))
+    with pytest.raises(ValueError):
+        testpattern.build_settings(args("--order", "0,0,1,2,3,4"))
 
 
 def test_tool_takes_what_the_panels_showed(tmp_path, monkeypatch):
@@ -87,13 +97,33 @@ def test_tool_takes_what_the_panels_showed(tmp_path, monkeypatch):
         testpattern.parse_seen("3,x,2,1,5,4")
 
 
-def test_tool_reports_unknown_interface(tmp_path, monkeypatch, capsys):
+def test_tool_reports_an_address_that_does_not_resolve(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("TRAFFICLIGHT_DATA", str(tmp_path))
-    assert testpattern.main(["--iface", "no-such-interface-xyz", "--pattern", "panels", "--seconds", "0.1"]) == 1
-    assert "error:" in capsys.readouterr().err
+    assert testpattern.main(["--card", "no-such-host.invalid", "--pattern", "panels", "--seconds", "0.1"]) == 1
+    assert "cannot be resolved" in capsys.readouterr().err
 
 
-def test_tool_lists(capsys):
-    rc = testpattern.main(["--list"])
+# Against a fake card on localhost: no real port (5775, 5776) is bound and nothing leaves 127.0.0.1.
+LOCAL = ("--raw", "--card", "127.0.0.1", "--options", "announce_port=0,broadcast=,dither=0")
+
+
+@pytest.fixture
+def card():
+    c = FakeCard()
+    yield c
+    c.close()
+
+
+def test_tool_detects_the_card(tmp_path, monkeypatch, capsys, card):
+    monkeypatch.setenv("TRAFFICLIGHT_DATA", str(tmp_path))
+    assert testpattern.main([*LOCAL, "--port", str(card.port), "--detect"]) == 0
     out = capsys.readouterr().out
-    assert rc in (0, 1) and out
+    assert out.startswith("card 127.0.0.1:") and "firmware 0.1" in out
+
+
+def test_tool_shows_a_pattern_and_leaves_the_sign_dark(tmp_path, monkeypatch, capsys, card):
+    monkeypatch.setenv("TRAFFICLIGHT_DATA", str(tmp_path))
+    assert testpattern.main([*LOCAL, "--port", str(card.port), "--pattern", "wiring", "--seconds", "1.5"]) == 0
+    assert "done: " in capsys.readouterr().out
+    assert any(b.strip(b"\0") for _, b in list(card.shown))
+    wait_for(lambda: not card.shown[-1][1].strip(b"\0"), what="the sign dark")

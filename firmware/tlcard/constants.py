@@ -25,7 +25,7 @@ CHUNK_ALIGN = 32
 MAX_CHUNK_DATA = 1440
 
 # Section 6.1: addressing. The card is 10.75.c.d with MAC 02:5a:75:00:c:d, c and d from the
-# flash's unique id (W25Q32JV command 0x4B: 4 dummy bytes, then 8 id bytes) unless the build fixes them.
+# flash's unique id (command 0x4B: 4 dummy bytes, then 8 id bytes; GD25Q32 and W25Q32JV alike) unless the build fixes them.
 NET_PREFIX = (10, 75)
 MAC_PREFIX = 0x025A7500                     # the MAC's top four bytes
 FLASH_CMD_UID = 0x4B

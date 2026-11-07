@@ -51,7 +51,7 @@ was reliable. Write the flash the same way: `openFPGALoader -c dirtyJtag --freq 
 ### The card's address
 
 `--ip auto` (the default): about 10 µs after start the gateware reads the flash's 64-bit unique
-id (W25Q32JV command 0x4B, SCK through `USRMCLK`, ~17 µs) and folds it (docs/FIRMWARE.md 6.1):
+id (command 0x4B; GD25Q32 on the sign's card, W25Q32JV on others; SCK through `USRMCLK`, ~17 µs) and folds it (docs/FIRMWARE.md 6.1):
 fold = the XOR of the id's four 16-bit halves, c = fold >> 8 and d = fold & 0xFF with 0 -> 1
 and 255 -> 254, IP **10.75.c.d**, MAC **02:5a:75:00:c:d**. The registers are set once and feed
 LiteEth (ARP, IP, the MAC filter); nothing is sent before. `--ip a.b.c.d` builds the address

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
-import type { AudioDevice, ColorOrder, NetInterface, OutputSettings, Settings, TestPattern } from '../api/types';
+import type { AudioDevice, ColorOrder, OutputSettings, Settings, TestPattern } from '../api/types';
 import { Field, Segmented, Slider, Toggle } from '../components/ui';
 import { SetupList } from '../components/SetupChecks';
 import { patchSettings, settingsRes, useAppState, useSettings } from '../state/app';
@@ -15,12 +15,10 @@ const LIGHT_NAMES = ['Top', 'Middle', 'Bottom'];
 export default function SettingsPage() {
   const s = useSettings();
   const [devices, setDevices] = useState<AudioDevice[] | null>(null);
-  const [ifaces, setIfaces] = useState<NetInterface[] | null>(null);
 
   useEffect(() => {
     void settingsRes.refresh();
     attempt(api.audioDevices).then((d) => d && setDevices(d));
-    attempt(api.outputInterfaces).then((d) => d && setIfaces(d));
   }, []);
 
   if (!s) return <div className="page"><h1>Settings</h1><p className="muted">Loading…</p></div>;
@@ -29,7 +27,7 @@ export default function SettingsPage() {
       <h1>Settings</h1>
       <SetupCard />
       <AudioCard s={s} devices={devices} />
-      <OutputCard s={s} ifaces={ifaces} />
+      <OutputCard s={s} />
       <WiringCard s={s} />
       <LightsCard s={s} />
     </div>
@@ -64,28 +62,17 @@ function AudioCard({ s, devices }: { s: Settings; devices: AudioDevice[] | null 
   );
 }
 
-function OutputCard({ s, ifaces }: { s: Settings; ifaces: NetInterface[] | null }) {
+function OutputCard({ s }: { s: Settings }) {
   const o = s.output;
   const [brightness, setBrightness] = useDebouncedValue(o.brightness, (v) => void patchSettings({ output: { brightness: v } }));
   const [gamma, setGamma] = useDebouncedValue(o.gamma, (v) => void patchSettings({ output: { gamma: v } }));
-  const known = ifaces?.some((i) => i.id === o.interface) ?? true;
   return (
     <section className="card">
       <h2>LED output</h2>
       <Field label="Driver">
-        <Segmented value={o.driver} options={[{ value: 'colorlight', label: 'Colorlight' }, { value: 'fpga', label: 'Custom firmware' }, { value: 'none', label: 'None' }]}
-          // The custom card is linear, so its gamma setting is the gamma; the stock card applies its own (1.0).
-          onChange={(v) => void patchSettings({ output: v === 'fpga' && o.gamma === 1 ? { driver: v, gamma: 2.2 } : { driver: v } })} />
+        <Segmented value={o.driver} options={[{ value: 'fpga', label: 'Custom firmware' }, { value: 'none', label: 'None (preview only)' }]}
+          onChange={(v) => void patchSettings({ output: { driver: v } })} />
       </Field>
-      {o.driver === 'colorlight' && (
-        <Field label="Network interface" hint="The Ethernet port the Colorlight card is plugged into.">
-          <select value={o.interface ?? ''} onChange={(e) => void patchSettings({ output: { interface: e.target.value || null } })}>
-            <option value="">Choose…</option>
-            {!known && o.interface && <option value={o.interface}>{o.interface} (not found)</option>}
-            {ifaces?.map((i) => <option key={i.id} value={i.id}>{i.name}{i.description ? ` – ${i.description}` : ''}{i.up ? '' : ' (down)'}</option>)}
-          </select>
-        </Field>
-      )}
       {o.driver === 'fpga' && <CardAddress o={o} />}
       <Field label="Brightness"><Slider label="Brightness" value={brightness} min={0} max={1} step={0.01} onChange={setBrightness} format={(v) => `${Math.round(v * 100)}%`} /></Field>
       <Field label="Gamma"><Slider label="Gamma" value={gamma} min={0.5} max={3} step={0.05} onChange={setGamma} format={(v) => v.toFixed(2)} /></Field>
@@ -212,7 +199,7 @@ function WiringCard({ s }: { s: Settings }) {
           </div>
         </div>
       )}
-      <p className="muted small">A number that looks mirrored (not upside down), stripes, or half a panel dark cannot be fixed here: that is the receiver setup in LEDVision (docs/HARDWARE.md, section 4).</p>
+      <p className="muted small">A number that looks mirrored (not upside down), stripes, or half a panel dark cannot be fixed here: that is a cable, a panel, or how the card's firmware drives the panels (docs/HARDWARE.md, section 5).</p>
     </section>
   );
 }

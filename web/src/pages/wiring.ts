@@ -1,6 +1,6 @@
 // Panel wiring: what each panel shows under the "wiring" test picture <-> Settings.output.panel_order / panel_flip.
 //
-// The wiring picture is drawn straight into the receiver card's image: band b (connector J(b+1)) shows the number b+1
+// The wiring picture is drawn straight into the card's image: band b (connector J(b+1)) shows the number b+1
 // and an arrow to the top of the band. So a panel mounted upright shows its connector's arrow pointing up, one mounted
 // rotated 180 degrees shows it pointing down. For the panel at position i (0 = top): number n, arrow up ->
 // panel_order[i] = n - 1, panel_flip[i] = false; arrow down -> panel_flip[i] = true. That holds with rotate180 off,

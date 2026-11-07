@@ -23,7 +23,7 @@ def hub75_resource():
             IOStandard("LVCMOS33"), Misc("SLEWRATE=FAST"))
 
 
-# The W25Q32JV's CS#, SI and SO; its SCK is the dedicated MCLK pin, reached through USRMCLK.
+# The configuration flash's CS#, SI and SO (a GD25Q32 on the sign's card); its SCK is the dedicated MCLK pin, reached through USRMCLK.
 CONFIG_FLASH = ("config_flash", 0,
                 Subsignal("cs_n", Pins("N8")),
                 Subsignal("mosi", Pins("T8")),

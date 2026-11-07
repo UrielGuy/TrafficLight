@@ -8,11 +8,13 @@ done separately: the gateware (LiteX, no CPU), the host output driver
 behavioural model of the card, with tests). If code and this file disagree,
 fix one of them in the same change.
 
-The stock firmware and its raw-Ethernet protocol are described in
-`docs/HARDWARE.md` sections 8–9. What was wrong with it: the card swaps its
+The stock firmware and its raw-Ethernet protocol were described in
+`docs/HARDWARE.md` sections 8–9 up to commit 3f10cbd, the last version of
+the server that drives it; the stock firmware is no longer supported. What
+was wrong with it: the card swaps its
 picture buffers on every display packet, in the middle of its own LED
 refresh, so uneven host timing shows as flicker; it gives 6–11 bits of
-colour under its own undocumented gamma; and it needs raw sockets (Npcap on
+colour under its own undocumented gamma; and it needed raw sockets (Npcap on
 Windows, `CAP_NET_RAW` on the Pi).
 
 Statements marked **[confirm]** are assumptions to check on the hardware;
@@ -79,7 +81,7 @@ builds. The gateware never interprets pixels.
   every write is a whole 32-bit word.** litex-boards has this module for
   revision 8.2. [confirm: the part and the clock it runs at under LiteDRAM]
 * Ethernet: two Realtek RTL8211F PHYs (RGMII); either port is used
-  (`--eth-phy=0|1`). Flash: Winbond 25Q32JV, 4 MiB.
+  (`--eth-phy=0|1`). Flash: 4 MiB SPI, GigaDevice GD25Q32 on the sign's card (JEDEC c8 40 16; the bring-up notes expected a Winbond W25Q32JV, which some cards carry).
 * HUB75: eight connectors J1..J8. **CLK, LAT, OE and the row address A..E
   are common to all eight**; only R1 G1 B1 R2 G2 B2 are per connector, so
   one shift clock carries 48 colour bits and every visit lights the same row
@@ -318,8 +320,8 @@ The network is **10.75.0.0/16**, kept for the sign: nothing else lives on it.
   **255.255.0.0** (the /16 mask matters: the cards are outside 10.75.0.x).
   Further hosts, if ever, take 10.75.0.2 and up. No card ever uses 10.75.0.x.
 * **Cards: 10.75.1.1 .. 10.75.254.254**, each deriving its own address at
-  power-up from the 64-bit unique id of its configuration flash (W25Q32JV
-  command 0x4B: 4 dummy bytes, then 8 id bytes; read once, a few microseconds
+  power-up from the 64-bit unique id of its configuration flash (command
+  0x4B on both the GD25Q32 and the W25Q32JV: 4 dummy bytes, then 8 id bytes; read once, a few microseconds
   after the design starts):
 
   ```
@@ -646,9 +648,8 @@ compare the status fields.
   folded in) -> optional temporal dithering (the fraction left over is
   carried to the next frame; a still picture averages to the 16-bit value
   over 16 frames) -> bit planes -> records. About 1.5 ms on a PC, a few ms
-  on a Pi 5, whole-array numpy. The stock-firmware setting `gamma = 1.0`
-  "because the card applies its own" no longer applies: this card is
-  linear, the host's gamma (2.2) is the gamma.
+  on a Pi 5, whole-array numpy. This card is linear: the host's gamma
+  (2.2, the default) is the gamma.
 * **Send** the chunks and the commit (`protocol.chunk_frame`) with a
   monotonic `frame_id`, **paced**: at most 8 packets back to back, then
   at least 250 µs before the next group (a frame then takes 6.5 ms to

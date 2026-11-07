@@ -16,14 +16,20 @@ a confidence tag:
 
 The stock firmware is backed up at `data/card-backup-2026-11-06/flash-4mb.bin`
 (path only; this guide never reads `data/`). Keep that file safe before any
-flash write.
+flash write. That is the factory state (PWM-chip firmware 11.06, which does
+not drive these panels); `data/card-backup-2026-11-06-jtag/flash-read1.bin`
+is the card as it later worked with the stock "Normal" firmware 13.39 and
+its LEDVision settings. Restoring either one (section 5.4, step 5) is how to
+go back to the stock firmware, but the server no longer supports it: its
+driver (`colorlight`, raw Ethernet) was removed after commit 3f10cbd, the
+last version that can drive a card with the stock firmware.
 
 ## 1. What the card is (V8.2)
 
 | Item | Part | Notes |
 | --- | --- | --- |
 | FPGA | Lattice `LFE5U-25F-7BG256I` (U33) | 25k LUT, CABGA256, speed grade 7, industrial. V8.0 is `-6BG256C`. [src: chubby75 V8.2 page] |
-| Config flash | Winbond `25Q32JVSIQ` (U31) | 32 Mbit = 4 MiB, matches our dump size. WP# and HOLD# tied to 3.3 V, so no hardware write protect. [src] |
+| Config flash | Winbond `25Q32JVSIQ` (U31) per the sources; **the sign's card has a GigaDevice GD25Q32** (JEDEC c8 40 16, read 2026-11-07) | 32 Mbit = 4 MiB, matches our dump size. WP# and HOLD# tied to 3.3 V, so no hardware write protect. [src] |
 | SDRAM | ESMT `M12L64322A` (U29) | 2M x 32 bit = 64 Mbit = 8 MiB, 4 banks x 512k x 32, 200 MHz. One chip, 32-bit bus. [multi: chubby75 V8.0 and V8.2, litex-boards] |
 | Ethernet PHYs | 2 x Realtek `RTL8211F`-family (U11, U13), RGMII | V8.0 page says `RTL8211FD`, V8.2 page says `RTL8211FP` with the suffix unconfirmed. Both are RTL8211F class. V6.1 and V7.0 had Broadcom B50612D, so do not use older pin tables. [src] |
 | HUB75 level shifters | 12 x 74HC245-class octal buffers, powered from 5 V | Output only (see 3). [src] |

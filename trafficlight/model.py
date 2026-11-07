@@ -79,19 +79,29 @@ class SetSummary(BaseModel):
 
 # ---------------------------------------------------------------- settings
 class OutputSettings(BaseModel):
-    driver: Literal["colorlight", "fpga", "none"] = "none"   # colorlight = stock firmware (raw Ethernet); fpga = our firmware (UDP)
-    interface: Optional[str] = None    # network interface id from /api/output/interfaces (colorlight only)
-    card_address: str = ""             # fpga: "" = automatic (the card announces itself), else the card's
+    driver: Literal["fpga", "none"] = "fpga"   # fpga = the card with our firmware (UDP, docs/FIRMWARE.md); none = no sign
+    card_address: str = ""             # "" = automatic (the card announces itself), else the card's
                                        # host name or IPv4 address (docs/FIRMWARE.md section 6.1)
     card_port: int = Field(protocol.PORT, ge=1, le=65535)
     brightness: float = 0.5            # 0..1
-    gamma: float = 1.0                 # applied in software before sending. colorlight: 1.0 = leave to the receiver card;
-                                       # fpga: the card is linear, so this is the gamma (2.2)
+    gamma: float = 2.2                 # applied by the driver's packer: the card is linear
     rotate180: bool = False            # whole sign upside down
     panel_order: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5])   # panel (top..bottom) -> the card's band it is on
                                        # = connector number - 1 (0..PORTS-1, all different); see output/wiring.py
     panel_flip: list[bool] = Field(default_factory=lambda: [False] * 6)          # panel mounted rotated 180 degrees
-    color_order: Literal["rgb", "rbg", "grb", "gbr", "brg", "bgr"] = "rgb"   # byte order on the wire; this card probably needs "bgr" (docs/HARDWARE.md)
+    color_order: Literal["rgb", "rbg", "grb", "gbr", "brg", "bgr"] = "rgb"   # "bgr": blue to the panels' R inputs, green to G, red to B
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_the_stock_firmware(cls, data: Any) -> Any:
+        # Settings saved while the stock firmware was supported say "colorlight", with gamma 1.0 meaning
+        # "the receiver card applies its own"; the custom firmware is linear, so that becomes the real gamma
+        # (what switching the driver in the UI did). The old "interface" key is ignored like any unknown key.
+        if isinstance(data, dict) and data.get("driver") == "colorlight":
+            data = {**data, "driver": "fpga"}
+            if data.get("gamma", 1.0) == 1.0:
+                data["gamma"] = 2.2
+        return data
 
     @field_validator("card_address")
     @classmethod

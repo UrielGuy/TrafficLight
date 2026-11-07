@@ -9,14 +9,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 User=@USER@
-# Raw Ethernet (AF_PACKET) needs CAP_NET_RAW. AmbientCapabilities= (systemd.exec(5)) hands
-# it to the unprivileged process across the exec of its interpreter, so nothing on disk
-# changes. setcap on .venv/bin/python would not do what it looks like: that file is a
-# symlink to /usr/bin/python3.x, setcap acts on the real interpreter, and every Python
-# program on the machine would get the capability. CAP_NET_ADMIN is optional: it only lets
-# the driver enlarge the socket send buffer past the kernel limit (SO_SNDBUFFORCE).
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+# The LED card is plain UDP on unprivileged ports: no capabilities at all.
+CapabilityBoundingSet=
 NoNewPrivileges=yes
 # Sound: talk to the sound card through ALSA directly. A system service has no desktop
 # session, hence no PipeWire/PulseAudio to connect to; the audio group grants /dev/snd
@@ -27,8 +21,8 @@ SupplementaryGroups=audio
 StateDirectory=trafficlight
 Environment=TRAFFICLIGHT_DATA=/var/lib/trafficlight
 Environment=PYTHONUNBUFFERED=1
-# Protocol options for the Colorlight driver (docs/HARDWARE.md, section 8):
-#Environment=TRAFFICLIGHT_COLORLIGHT=sync_gap_ms=3
+# Options of the LED card driver that are not settings (trafficlight/output/fpga.py, FpgaOptions):
+#Environment=TRAFFICLIGHT_FPGA=burst=4,gap_us=300
 WorkingDirectory=@REPO@
 ExecStart=@REPO@/.venv/bin/python -m trafficlight --port 8080
 Restart=always

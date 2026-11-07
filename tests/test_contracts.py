@@ -56,5 +56,5 @@ def test_colors():
 
 
 def test_null_backends():
-    assert isinstance(create_driver(model.OutputSettings()), NullDriver)
+    assert isinstance(create_driver(model.OutputSettings(driver="none")), NullDriver)
     NullAudio().sync([], True)

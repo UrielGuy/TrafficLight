@@ -151,7 +151,7 @@ class FakeDriver(OutputDriver):
 
     def open(self):
         if self.fail:
-            raise OutputError("no such interface")
+            raise OutputError("cannot open a UDP socket")
         self.opened = True
 
     def send(self, frame):
@@ -172,7 +172,7 @@ class FakeDriver(OutputDriver):
         self.closed = True
 
     def status(self):
-        return {"driver": "fake", "ok": True, "error": None, "interface": None}
+        return {"driver": "fake", "ok": True, "error": None}
 
 
 class FakeAudio(AudioEngine):

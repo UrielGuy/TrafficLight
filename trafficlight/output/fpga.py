@@ -1,6 +1,6 @@
 """Output driver for the custom FPGA firmware of the Colorlight 5A-75B (docs/FIRMWARE.md).
 
-Plain UDP to the card (port 5775): no raw sockets, no Npcap, no root. The card is a streamer; everything
+Plain UDP to the card (port 5775), no privileges needed. The card is a streamer; everything
 else happens here, on one sender thread:
 
 * Finding the card (section 6.1): every card broadcasts an ANNOUNCE to 10.75.255.255:5776 every second.
@@ -184,8 +184,6 @@ class FpgaDriver(OutputDriver):
         self._brightness = min(max(settings.brightness, 0.0), 1.0)
         self._fps = 60.0
         self._config_problem: dict[str, Any] | None = None
-        # The card is linear: the packer applies the gamma (and brightness) in 12.4 fixed point, so the
-        # mapper must not apply it a second time at 8 bits.
         self._mapper = self._make_mapper(self.settings)
         self._sock: socket.socket | None = None
         self._listen_problem: dict[str, Any] | None = None
@@ -335,7 +333,7 @@ class FpgaDriver(OutputDriver):
             fps = 0.0
         st, addr, found = self._status, self._addr, self._found
         return {
-            "driver": "fpga", "ok": error is None, "error": error, "interface": None,
+            "driver": "fpga", "ok": error is None, "error": error,
             "open": self._thread is not None, "warnings": warnings, "problems": problems,
             "address": f"{addr[0]}:{addr[1]}" if addr else None, "answering": self._answering(time.monotonic()),
             "found": {**found.info(), "auto": self._pinned is None} if found else None,
@@ -465,7 +463,7 @@ class FpgaDriver(OutputDriver):
         try:
             validate(s)
             self._config_problem = None
-            return Mapper(s.model_copy(update={"gamma": 1.0}))
+            return Mapper(s)
         except ValueError as e:
             self._config_problem = problem("output.settings", "Output settings ignored", f"Output settings ignored: {e}",
                                            "Run Settings → Panel wiring again, or fix the values in data/settings.json.")

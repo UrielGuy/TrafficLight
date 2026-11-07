@@ -2,11 +2,15 @@
 
 Show controller for a Burning Man art piece: a traffic light whose three
 lights are six 128×64 HUB75 panels (128×384, 24-bit colour) on a Colorlight
-5A-75B receiver card (stock firmware, raw Ethernet). Runs on Windows and on a
-Raspberry Pi. Web UI with a timeline editor.
+5A-75B card running our own firmware (`docs/FIRMWARE.md`, gateware in
+`firmware/`), driven over UDP. The stock Colorlight firmware is no longer
+supported. Runs on Windows and on a Raspberry Pi. Web UI with a timeline
+editor.
 
 **Read `docs/ARCHITECTURE.md` first**: it is the contract (data model, module
 interfaces, HTTP and WebSocket API). `PLAN.md` has the work breakdown.
+`docs/FIRMWARE.md` is the contract for the LED card's firmware and its UDP
+protocol.
 
 The predecessor is `../TehilaStoplight` (ESP32 firmware, 2-bit colour). Its
 features are being carried over; its docs (`CLAUDE.md`, `docs/ARCHITECTURE.md`)
@@ -23,7 +27,7 @@ The repo lives on the Windows drive and is worked on from WSL.
   `sounddevice` import fails there, so audio code must degrade (NullAudio) and
   be tested with a fake backend.
 * **Windows:** `.venv\Scripts\python.exe` (Python 3.13, same packages; sound
-  devices and Npcap work here). From WSL:
+  devices work here). From WSL:
   `cmd.exe /c ".venv\Scripts\python.exe -m pytest tests\test_x.py -q"`
   (the working directory must be the repo).
 * **Node** exists only on Windows (v25): from WSL run

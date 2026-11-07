@@ -324,7 +324,7 @@ def test_driver_failure_reported_and_retried(tmp_path):
     r.fail_driver = True
     r.step()
     out = r.engine.state()["output"]
-    assert out["ok"] is False and "no such interface" in out["error"]
+    assert out["ok"] is False and "cannot open a UDP socket" in out["error"]
     n = len(r.drivers)
     r.run(1.0)
     assert len(r.drivers) == n                  # not hammering

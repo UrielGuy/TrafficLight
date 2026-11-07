@@ -70,7 +70,7 @@ def picture(seed=1) -> np.ndarray:
 
 def expected(frame, schedule, gamma=2.2, brightness=1.0, dither=False, card_image=False):
     """What the card should hold for a picture: the same mapping and packing, done independently."""
-    m = Mapper(OutputSettings(gamma=1.0))
+    m = Mapper(OutputSettings())
     img = m.apply_card(frame) if card_image else m.apply(frame)
     return Packer(schedule, gamma, brightness, dither).pack(img).tobytes()
 
@@ -276,7 +276,7 @@ def test_a_card_image_skips_the_panel_mapping_but_not_the_gamma(card, make):
     ready(card, d)
     img = picture(2)[:config.CARD_H] if config.CARD_H <= config.H else np.pad(picture(2), ((0, config.CARD_H - config.H), (0, 0), (0, 0)))
     d.send_card(img)
-    m = Mapper(OutputSettings(gamma=1.0, color_order="bgr"))
+    m = Mapper(OutputSettings(color_order="bgr"))
     want = Packer(card.active, 2.2, 1.0, False).pack(m.apply_card(img)).tobytes()
     wait_for(lambda: card.shown_frame == want, what="card image shown")
 
@@ -286,7 +286,7 @@ def test_panel_order_and_colour_order_follow_the_mapper(card, make):
     ready(card, d)
     f = picture(3)
     d.send(f)
-    m = Mapper(OutputSettings(gamma=1.0, panel_order=[1, 0, 2, 3, 4, 5], color_order="brg"))
+    m = Mapper(OutputSettings(panel_order=[1, 0, 2, 3, 4, 5], color_order="brg"))
     want = Packer(card.active, 2.2, 1.0, False).pack(m.apply(f)).tobytes()
     wait_for(lambda: card.shown_frame == want, what="mapped frame shown")
 
@@ -566,8 +566,15 @@ def test_options_parse():
 
 
 def test_settings_defaults_and_old_files():
-    s = OutputSettings.model_validate({"driver": "colorlight", "interface": "eth0", "brightness": 0.3})
-    assert s.card_address == "" and s.card_port == 5775
+    d = OutputSettings()
+    assert (d.driver, d.card_address, d.card_port, d.gamma) == ("fpga", "", 5775, 2.2)
+    # Saved while the stock firmware was supported: its gamma 1.0 left the gamma to that card.
+    s = OutputSettings.model_validate({"driver": "colorlight", "interface": "eth0", "brightness": 0.3, "gamma": 1.0})
+    assert (s.driver, s.brightness, s.gamma, s.card_address) == ("fpga", 0.3, 2.2, "")
+    assert not hasattr(s, "interface") and "interface" not in s.model_dump()
+    assert OutputSettings.model_validate({"driver": "colorlight", "gamma": 1.8}).gamma == 1.8
+    assert OutputSettings.model_validate({"driver": "fpga", "interface": None, "gamma": 1.0}).gamma == 1.0
+    assert OutputSettings.model_validate({"driver": "none", "interface": "eth0"}).driver == "none"
     assert OutputSettings(driver="fpga", card_address=" 192.168.1.5 ").card_address == "192.168.1.5"
     assert OutputSettings(card_address="  ").card_address == ""
     assert OutputSettings.model_validate({"card_address": "10.75.0.2"}).card_address == "10.75.0.2"   # pinned, kept

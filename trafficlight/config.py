@@ -15,7 +15,7 @@ PANELS = 6
 # 1/32 scan: a row address lights panel row a (the R1/G1/B1 group) and row a + SCAN_ROWS (R2/G2/B2) together.
 SCAN_ROWS = PANEL_H // 2
 
-# The receiver card's image: one 64-row band per HUB75 connector, band b = connector J(b+1), from the top.
+# The card's image: one 64-row band per HUB75 connector, band b = connector J(b+1), from the top.
 # Bands without a panel are sent black; Settings.output.panel_order says which band each panel is on.
 PORTS = 8
 CARD_H = PORTS * PANEL_H

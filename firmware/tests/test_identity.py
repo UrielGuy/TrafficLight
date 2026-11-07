@@ -1,5 +1,5 @@
 """The card's identity (docs/FIRMWARE.md 6.1): the flash id reader against a behavioural
-W25Q32JV (command, dummy bytes, SPI mode 0, id assembly), and the fold to IP and MAC with its
+configuration flash (GD25Q32 / W25Q32JV: command, dummy bytes, SPI mode 0, id assembly), and the fold to IP and MAC with its
 clamps and the uid_valid flag."""
 import os
 

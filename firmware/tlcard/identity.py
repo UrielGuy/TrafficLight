@@ -23,7 +23,7 @@ def mac_for_ip(ip: int) -> int:
 
 
 class FlashUidReader(LiteXModule):
-    """Reads the W25Q32JV unique id once (command 0x4B, 4 dummy bytes, 8 id bytes), SPI mode 0:
+    """Reads the configuration flash's unique id once (GD25Q32 / W25Q32JV) (command 0x4B, 4 dummy bytes, 8 id bytes), SPI mode 0:
     SCK idles low, MOSI changes after a falling edge, MISO is sampled at the rising edge.
     `sck` goes to the MCLK pin through USRMCLK on the card. `uid` is the id as a big-endian
     integer (first byte read in bits 63:56); `done` rises once it is complete and stays high."""

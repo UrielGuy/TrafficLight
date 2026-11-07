@@ -1,18 +1,19 @@
 """Drive the sign without the server: the bring-up tool.
 
-    python -m trafficlight.tools.testpattern --list
-    python -m trafficlight.tools.testpattern --iface ID --detect
-    python -m trafficlight.tools.testpattern --iface ID --pattern wiring
-    python -m trafficlight.tools.testpattern --iface ID --pattern panels --seen 3,8d,2,1d,5,4
+    python -m trafficlight.tools.testpattern --detect
+    python -m trafficlight.tools.testpattern --pattern wiring
+    python -m trafficlight.tools.testpattern --pattern panels --seen 3,8d,2,1d,5,4
 
-Mapping settings come from data/settings.json when it exists (what the
-server uses); --raw ignores them, and --order / --flip / --rotate180 /
---color-order / --gamma override them, so the right values can be found by
-trying them here and then entered in the UI. "wiring" shows each connector's
-number and an arrow, past the mapping; --seen takes what the panels showed
-(top to bottom: the number, "d" if the arrow pointed down, "-" for a dark
-panel) and works out panel_order and panel_flip, the rule of the web UI's
-wiring wizard. See docs/HARDWARE.md.
+The card is found as the server finds it (by its announcements, or at the
+address in the settings); --card pins an address. Mapping settings come from
+data/settings.json when it exists (what the server uses); --raw ignores
+them, and --order / --flip / --rotate180 / --color-order / --gamma override
+them, so the right values can be found by trying them here and then entered
+in the UI. "wiring" shows each connector's number and an arrow, past the
+mapping; --seen takes what the panels showed (top to bottom: the number, "d"
+if the arrow pointed down, "-" for a dark panel) and works out panel_order
+and panel_flip, the rule of the web UI's wiring wizard. Stop the server
+first: two programs sending to one card fight over it. See docs/HARDWARE.md.
 """
 from __future__ import annotations
 
@@ -26,9 +27,10 @@ from .. import config
 from ..model import OutputSettings, Settings
 from ..output import patterns
 from ..output.base import OutputError
-from ..output.colorlight import ColorlightDriver, ColorlightOptions, detect, list_interfaces
-from ..output.rawsock_base import open_raw
+from ..output.fpga import FpgaDriver, FpgaOptions
 from ..output.wiring import Seen, from_seen
+
+DETECT_SECONDS = 5.0
 
 
 def _saved_output() -> OutputSettings | None:
@@ -63,54 +65,66 @@ def parse_seen(text: str) -> list[Seen]:
 
 def build_settings(a: argparse.Namespace) -> OutputSettings:
     base = None if a.raw else _saved_output()
-    s = (base or OutputSettings()).model_copy(deep=True)
-    s.driver = "colorlight"
-    s.interface = a.iface
+    s = (base or OutputSettings()).model_dump()
+    s["driver"] = "fpga"
+    if a.card is not None:
+        s["card_address"] = a.card
+    if a.port is not None:
+        s["card_port"] = a.port
     if a.seen:
         if a.order or a.flip or a.rotate180:
             raise ValueError("--seen sets the order, flips and rotation itself: leave out --order, --flip, --rotate180")
-        s.panel_order, s.panel_flip = from_seen(parse_seen(a.seen))
-        s.rotate180 = False
+        s["panel_order"], s["panel_flip"] = from_seen(parse_seen(a.seen))
+        s["rotate180"] = False
     if a.order:
-        s.panel_order = _ints(a.order)
+        s["panel_order"] = _ints(a.order)
     if a.flip:
-        s.panel_flip = [bool(v) for v in _ints(a.flip)]
+        s["panel_flip"] = [bool(v) for v in _ints(a.flip)]
     if a.rotate180:
-        s.rotate180 = True
+        s["rotate180"] = True
     if a.color_order:
-        s.color_order = a.color_order
+        s["color_order"] = a.color_order
     if a.gamma is not None:
-        s.gamma = a.gamma
+        s["gamma"] = a.gamma
     if a.brightness is not None:
-        s.brightness = a.brightness
-    return s
+        s["brightness"] = a.brightness
+    return OutputSettings.model_validate(s)
 
 
-def cmd_list() -> int:
-    ifs = list_interfaces()
-    if not ifs:
-        print("No Ethernet interfaces found.")
-        return 1
-    for i in ifs:
-        print(f"{'up  ' if i.up else 'down'}  {i.name:<20} {i.mac:<17}  {i.description}")
-        print(f"      --iface \"{i.id}\"")
-    return 0
+def _driver(a: argparse.Namespace, s: OutputSettings) -> FpgaDriver:
+    options = FpgaOptions.parse(a.options) if a.options else FpgaOptions.from_env()
+    drv = FpgaDriver(s, options)
+    drv.set_frame_rate(a.fps if a.fps > 0 else 60)
+    drv.open()
+    return drv
 
 
-def cmd_detect(iface: str) -> int:
-    sock = open_raw(iface)
+def _problems(st: dict) -> str:
+    return "".join(f"\n  {p['level'].upper()}: {p['title']}. {p['detail']}" + (f" {p['fix']}" if p["fix"] else "")
+                   for p in st["problems"])
+
+
+def cmd_detect(a: argparse.Namespace) -> int:
+    drv = _driver(a, build_settings(a))
     try:
-        up, mbps = sock.link()
-        print(f"link: {'up' if up else 'down' if up is False else 'unknown'}" + (f", {mbps} Mb/s" if mbps else ""))
-        found = detect(sock)
+        end = time.monotonic() + (a.seconds if a.seconds > 0 else DETECT_SECONDS)
+        while drv.status()["card"] is None and time.monotonic() < end:
+            time.sleep(0.05)
+        st = drv.status()
     finally:
-        sock.close()
-    if not found:
-        print("No receiver card answered.")
+        drv.close()
+    card, found = st["card"], st["found"]
+    if card is None:
+        print("No card answered." + _problems(st))
         return 1
-    for r in found:
-        print(f"receiver {r.index}: firmware {r.firmware}, configured {r.width}x{r.height}, "
-              f"up {r.uptime_s:.0f} s, card byte 0x{r.card:02x}")
+    if found:
+        print(f"card {found['ip']}:{found['port']}  MAC {found['mac']}  flash id {found['uid']}")
+    else:
+        print(f"card {st['address']}")
+    print(f"firmware {card['firmware']} (build {card['build']}), up {card['uptime_s']:.0f} s, "
+          f"tick {card['tick_hz'] / 1e6:g} MHz" + _problems(st))
+    for o in st["others"]:
+        print(f"also heard: {o['ip']}  MAC {o['mac']}  firmware {o['fw']}")
     return 0
 
 
@@ -125,9 +139,7 @@ def cmd_show(a: argparse.Namespace) -> int:
             print(f"Unknown pattern {a.pattern!r}; one of: {names}", file=sys.stderr)
             return 2
     s = build_settings(a)
-    drv = ColorlightDriver(s, options=ColorlightOptions.parse(a.options))
-    drv.set_frame_rate(a.fps)
-    drv.open()
+    drv = _driver(a, s)
     print(f"order {s.panel_order} flip {[int(f) for f in s.panel_flip]} rotate180 {s.rotate180} "
           f"color_order {s.color_order} gamma {s.gamma} brightness {s.brightness}" +
           ("  (the wiring picture ignores order, flip and rotate180)" if card is not None else ""))
@@ -164,40 +176,36 @@ def cmd_show(a: argparse.Namespace) -> int:
     finally:
         elapsed = time.perf_counter() - start
         st = drv.status()
-        if not a.keep:
-            drv.send(np.zeros((config.H, config.W, 3), np.uint8))
-            time.sleep(0.1)
-        drv.close()
-    frames = st["frames"]
-    per_frame = st["packets_per_frame"]
-    print(f"done: {frames} frames in {elapsed:.2f} s = {frames / elapsed:.1f} fps, "
-          f"{frames * per_frame / elapsed:.0f} packets/s, {st['dropped']} of {sent} offered frames dropped, "
-          f"sender {st['send_ms']:.2f} ms/frame")
+        drv.close()      # leaves the sign dark: the card would keep the last picture for ever
+    print(f"done: {st['frames']} frames sent in {elapsed:.2f} s, {st['held']} unchanged ones skipped, "
+          f"{st['dropped']} of {sent} offered dropped; packing {st['pack_ms']:.2f} ms, "
+          f"sending {st['send_ms']:.2f} ms per frame" + _problems(st))
     return 0 if st["ok"] else 1
 
 
-def _print_status(drv: ColorlightDriver, render_ms: float) -> None:
+def _print_status(drv: FpgaDriver, render_ms: float) -> None:
     s = drv.status()
-    rec = s["receiver"]
-    rtxt = f"card fw {rec['firmware']} {rec['width']}x{rec['height']}" if rec else "no card answer yet"
-    link = "up" if s["link"] else "DOWN" if s["link"] is False else "?"
-    print(f"{s['sent_fps']:5.1f} fps  sender {s['send_ms']:5.2f} ms  send() max {render_ms:.2f} ms  "
-          f"dropped {s['dropped']}  link {link}{' ' + str(s['link_mbps']) + ' Mb/s' if s['link_mbps'] else ''}  "
-          f"{rtxt}" + (f"  ERROR: {s['error']}" if s["error"] else "") +
-          "".join(f"  WARNING: {w}" for w in s["warnings"]))
+    card, sched = s["card"], s["schedule"]
+    ctxt = f"card {s['address']} fw {card['firmware']}" if card else "no card answer yet"
+    if sched:
+        ctxt += f", {sched['planes']} bits at {sched['frame_hz']:g} Hz"
+    print(f"{s['sent_fps']:5.1f} fps  pack {s['pack_ms']:5.2f} ms  send {s['send_ms']:5.2f} ms  "
+          f"send() max {render_ms:.2f} ms  dropped {s['dropped']}  {ctxt}" +
+          (f"  ERROR: {s['error']}" if s["error"] else "") + "".join(f"  WARNING: {w}" for w in s["warnings"]))
 
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m trafficlight.tools.testpattern", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--list", action="store_true", help="list network interfaces and their ids")
-    ap.add_argument("--iface", help="interface id (from --list); on Windows the adapter name works too")
-    ap.add_argument("--detect", action="store_true", help="ask the receiver card for its firmware and size")
+    ap.add_argument("--card", help="the card's address (default: saved setting, else found automatically; "
+                                   "\"\" = automatic)")
+    ap.add_argument("--port", type=int, help=f"the card's UDP port (default: saved setting, else {OutputSettings().card_port})")
+    ap.add_argument("--detect", action="store_true", help="find the card and print what it says about itself")
     ap.add_argument("--pattern", default="panels", help=f"black, {', '.join(patterns.NAMES + patterns.CARD_NAMES)}")
     ap.add_argument("--brightness", type=float, help="0..1 (default: saved setting, else 0.5)")
-    ap.add_argument("--seconds", type=float, default=0, help="stop after this long (default: until Ctrl+C)")
+    ap.add_argument("--seconds", type=float, default=0,
+                    help=f"stop after this long (default: until Ctrl+C; --detect: {DETECT_SECONDS:g})")
     ap.add_argument("--fps", type=float, default=60, help="frames per second offered; 0 = as fast as possible")
-    ap.add_argument("--keep", action="store_true", help="leave the pattern lit on exit (default: blank)")
     ap.add_argument("--raw", action="store_true", help="ignore data/settings.json")
     ap.add_argument("--order", help="panel_order, e.g. 0,1,2,3,4,5")
     ap.add_argument("--flip", help="panel_flip as 0/1, e.g. 0,1,0,1,0,1")
@@ -206,21 +214,15 @@ def parser() -> argparse.ArgumentParser:
                                    "(d = arrow down, - = dark): sets order and flips from it")
     ap.add_argument("--color-order", choices=["rgb", "rbg", "grb", "gbr", "brg", "bgr"])
     ap.add_argument("--gamma", type=float)
-    ap.add_argument("--options", help="protocol options, e.g. sync_gap_ms=5,sync_repeat=2 (see HARDWARE.md)")
+    ap.add_argument("--options", help="driver options as in TRAFFICLIGHT_FPGA, e.g. planes=11,burst=4 "
+                                      "(default: that variable)")
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = parser()
-    a = ap.parse_args(argv)
+    a = parser().parse_args(argv)
     try:
-        if a.list:
-            return cmd_list()
-        if not a.iface:
-            ap.error("--iface is required (see --list)")
-        if a.detect:
-            return cmd_detect(a.iface)
-        return cmd_show(a)
+        return cmd_detect(a) if a.detect else cmd_show(a)
     except OutputError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

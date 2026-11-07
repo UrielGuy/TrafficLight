@@ -1,13 +1,14 @@
 # TrafficLight
 
 Show controller for a traffic-light art piece: three lights made of six 128x64 HUB75 panels
-(128x384, 24-bit colour) on a Colorlight 5A-75B receiver card, driven by raw Ethernet frames.
+(128x384, 24-bit colour) on a Colorlight 5A-75B card running our own firmware, driven over UDP.
 A Python server (FastAPI) renders the shows and plays their sound; a web UI (React) edits sets on a
 timeline and controls the sign. It runs on a Windows PC for development and on a Raspberry Pi 4/5
 inside the sign.
 
-* `docs/HARDWARE.md`: wiring, LEDVision setup, bring-up with the test-pattern tool, protocol notes.
+* `docs/HARDWARE.md`: power, wiring, the network port, bring-up with the test-pattern tool.
 * `docs/ARCHITECTURE.md`: data model, modules, HTTP/WebSocket API.
+* `docs/FIRMWARE.md`: the card's firmware and its protocol; `docs/FPGA-BRINGUP.md`: building and flashing it.
 
 ## Windows
 
@@ -19,10 +20,9 @@ scripts\run.bat        REM start the server; arguments are passed on
 ```
 
 Then open <http://localhost:8080>. `run.bat --port 8090 --data D:\tl-data` changes port and data
-directory. To drive the sign you also need Npcap installed with "Restrict Npcap driver's access to
-Administrators only" unticked (`docs/HARDWARE.md`, section 5). Without it the server runs and the UI
-says what is missing. With the custom card firmware no Npcap is needed, but the card's network port
-needs the address 10.75.0.1 with netmask 255.255.0.0 (same section).
+directory. To drive the sign, the computer's network port for the card needs the address 10.75.0.1
+with netmask 255.255.0.0 (`docs/HARDWARE.md`, section 4). Without the card the server runs and the UI
+says what is missing.
 
 ## Raspberry Pi
 
@@ -47,8 +47,8 @@ sent, `-d DIR` picks another directory, `--no-build` skips the web build. Set up
 If you copy the repo by hand instead, build first (`cd web && npm run build`), copy the whole
 folder including `web/dist`, and run `bash scripts/install_pi.sh` on the Pi as your normal user.
 
-The service starts at boot, restarts on failure, runs as that user with only `CAP_NET_RAW` (and
-`CAP_NET_ADMIN` for a bigger socket buffer) for the raw socket, and has the `audio` group.
+The service starts at boot, restarts on failure, runs as that user without any capabilities, and
+has the `audio` group.
 Logs are kept in RAM only (journald `Storage=volatile`) to spare the SD card:
 
 ```
@@ -57,8 +57,8 @@ journalctl -u trafficlight -f
 sudo systemctl restart trafficlight
 ```
 
-The Pi's `eth0` is for the receiver card (gigabit, direct cable; with the custom card firmware it needs
-the static address 10.75.0.1/16, `docs/HARDWARE.md` section 5). The phone or laptop reaches the UI
+The Pi's `eth0` is for the LED card (gigabit, direct cable, static address 10.75.0.1/16,
+`docs/HARDWARE.md` section 4). The phone or laptop reaches the UI
 over Wi-Fi: join the Pi's network, or make the Pi the access point
 (`sudo nmcli device wifi hotspot ssid TrafficLight password <8+ characters>`, then
 `nmcli connection modify Hotspot connection.autoconnect yes`), and open `http://<pi-address>:8080`
@@ -77,11 +77,11 @@ Open `http://localhost:8080` (Windows) or `http://<pi-address>:8080`. From any o
 server must be reachable on port 8080 (the default `--host 0.0.0.0` listens on all interfaces; allow
 it in the Windows firewall prompt if you want to use a phone against the PC).
 
-**Settings → Setup** lists everything the sign still needs (Npcap or the Linux capability, the
-network interface, the link, the receiver card's LEDVision setup, the sound output), each with what
-to do; the Dashboard shows the ones that need attention. **Settings → Panel wiring** works out which
+**Settings → Setup** lists everything the sign still needs (the network port, the LED card and its
+firmware, the panel wiring, the sound output), each with what to do; the Dashboard shows the ones
+that need attention. **Settings → Panel wiring** works out which
 card port each panel is on and which panels hang upside down: plug them in anywhere, press "Show
-connector numbers", enter what each panel shows (`docs/HARDWARE.md`, section 6).
+connector numbers", enter what each panel shows (`docs/HARDWARE.md`, section 5).
 
 ## Data
 

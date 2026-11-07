@@ -47,7 +47,7 @@ def test_state_and_catalog(rig):
     assert set(st) >= {"now", "schedule", "output", "audio", "sets_rev", "media_rev", "version"}
     assert set(st["now"]) == {"source", "set_id", "set_name", "t", "duration", "paused"}
     assert set(st["schedule"]) == {"default_set", "random_minutes", "random_enabled", "random_in"}
-    assert {"driver", "ok", "error", "interface", "fps"} <= set(st["output"])
+    assert {"driver", "ok", "error", "fps"} <= set(st["output"])
     assert {"ok", "error", "device", "device_name", "volume", "voices"} <= set(st["audio"])
     types = {c["type"]: c for c in rig.get("/api/catalog").json()["clip_types"]}
     assert types["test:solid"]["params"][0]["kind"] == "color"
@@ -127,9 +127,9 @@ def test_settings(rig):
     assert rig.get("/api/settings").json()["schedule"]["default_set"] is None
 
 
-def test_devices_interfaces_test_pattern(rig):
+def test_devices_and_test_pattern(rig):
     assert rig.get("/api/audio/devices").json() == [{"id": "dev1", "name": "Speakers", "default": True, "channels": 2}]
-    assert isinstance(rig.get("/api/output/interfaces").json(), list)
+    assert rig.get("/api/output/interfaces").status_code == 404
     assert rig.post("/api/output/test", json={"pattern": "red"}).json() == {"ok": True}
     wait_for(lambda: rig.get("/api/state").json()["now"]["source"] == "test")
     assert rig.post("/api/output/test", json={"pattern": "plaid"}).status_code == 400

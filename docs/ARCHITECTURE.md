@@ -7,12 +7,12 @@ fix one of them in the same change.
 
 Six 128×64 HUB75 panels stacked vertically = a 128×384 canvas = three 128×128
 **lights** (also "faces"): 0 top, 1 middle, 2 bottom. Each panel hangs on its
-own port of a Colorlight 5A-75B receiver card running the **stock firmware**;
-the PC or Raspberry Pi sends it raw Ethernet frames. Full 24-bit colour.
-Alternatively the card runs our **custom firmware** (`docs/FIRMWARE.md`, `Settings.output.driver = "fpga"`): the same
-image goes to it as UDP packets, packed into bit planes by the host.
+own port of a Colorlight 5A-75B card running our **custom firmware**
+(`docs/FIRMWARE.md`, `Settings.output.driver = "fpga"`); the PC or Raspberry Pi
+sends it the picture as UDP packets, packed into bit planes by the host. Full
+24-bit colour. (The card's stock firmware is no longer supported.)
 
-The card has eight ports (J1..J8) and is configured for a 128×512 image
+The card has eight ports (J1..J8) and its image is 128×512
 (`config.PORTS` bands of 64 rows, `config.CARD_H`): band *b* feeds J*b+1*.
 Only the output driver sees that image; `Settings.output.panel_order` says
 which band each panel of the sign is on, the two bands without a panel are
@@ -32,7 +32,7 @@ web UI (React)  --REST + WebSocket-->  server (FastAPI)
      schedule -> which set plays ----\
      editor session (draft set) ------+--> player.render(t) -> frame + audio cues
                                           |            |
-                              output driver (Colorlight)   audio engine (sound card)
+                              output driver (LED card)     audio engine (sound card)
                               preview stream (WebSocket)
 ```
 
@@ -51,7 +51,7 @@ web UI (React)  --REST + WebSocket-->  server (FastAPI)
 | `trafficlight/media/ingest.py` | Original -> prepared files (PyAV, Pillow): rotate, crop, trim, proxy, sound, thumbnail. |
 | `trafficlight/media/download.py` | Fetching a link with yt-dlp (as a library) and merging picture and sound with PyAV. |
 | `trafficlight/audio/` | `AudioEngine` contract (`base.py`) and the sounddevice mixer (`engine.py`). |
-| `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver (stock firmware, raw Ethernet), FPGA driver (`fpga.py`: custom firmware over UDP, options in `TRAFFICLIGHT_FPGA`; `Settings.output.card_address` / `card_port`: the address `""` (the default) is automatic, the card is found by its announcements (docs/FIRMWARE.md 6.1, 6.7); an address pins it; port 5775; gamma and brightness are applied by its packer, so `output.gamma` is the real gamma, 2.2), panel mapping (`mapping.py`), test patterns, the wiring rule (`wiring.py`: what the panels show → `panel_order` / `panel_flip`). |
+| `trafficlight/output/` | `OutputDriver` contract (`base.py`), the driver (`fpga.py`: custom firmware over UDP, options in `TRAFFICLIGHT_FPGA`; `Settings.output.card_address` / `card_port`: the address `""` (the default) is automatic, the card is found by its announcements (docs/FIRMWARE.md 6.1, 6.7); an address pins it; port 5775; gamma and brightness are applied by its packer, so `output.gamma` is the real gamma, default 2.2), panel mapping (`mapping.py`: panel order, flips, rotation, colour order), test patterns, the wiring rule (`wiring.py`: what the panels show → `panel_order` / `panel_flip`). `driver = "none"` sends nothing (the preview still works). Settings files that still say `"colorlight"` (the stock-firmware driver, removed) load as `"fpga"`, a gamma of 1.0 there as 2.2. |
 | `trafficlight/output/hub75/` | Host side of the custom card firmware (`docs/FIRMWARE.md` is its contract): visit schedule, bit-plane packer, UDP packets, behavioural model of the card. |
 | `trafficlight/checks.py` | The setup checks (`State.checks`), built from the output and audio statuses. |
 | `trafficlight/store.py` | Sets and settings on disk. |
@@ -269,7 +269,6 @@ JSON everywhere. Errors: HTTP 4xx with `{"detail": "message"}`.
 | `GET /api/settings` | → `Settings` |
 | `PATCH /api/settings` | partial `Settings` (deep-merged) → `Settings`; takes effect at once. 422 with a readable `detail` for an impossible wiring: `output.panel_order` must be 6 different bands 0..7 (connector − 1), `output.panel_flip` 6 entries |
 | `GET /api/audio/devices` | → `[{"id","name","default","channels"}]` |
-| `GET /api/output/interfaces` | → `[{"id","name","description","mac","up"}]` |
 | `POST /api/output/test` | `{"pattern": "off" \| "panels" \| "white" \| "red" \| "green" \| "blue" \| "gradient" \| "wiring"}` → `{"ok": true}`; a test picture replaces the show until `"off"` (panels = each panel in its own colour with its number, to check the mapping; wiring = drawn in the card's image and sent past the mapping: each port's band shows its connector number 1..8, underlined, and an arrow to the top of the band, so each panel shows where it is plugged in and which way up it hangs. The preview meanwhile shows the sign as the current mapping would show that picture) |
 | `GET /api/media` | → `[MediaItem]` |
 | `POST /api/media` | multipart `file` (+ optional `name`) → `MediaItem` with `status: "processing"`; poll `GET /api/media/{id}` until `ready` or `error` |
@@ -294,14 +293,15 @@ State = {
           "t": 12.3, "duration": 30.0, "paused": false},
   "schedule": {"default_set": "…" | null, "random_minutes": 6, "random_enabled": true,
                "random_in": 123.0 | null},          // seconds until a random set is due; null = n/a
-  "output": {"driver": "colorlight", "ok": true, "error": null, "interface": "…", "fps": 59.9, "render_ms": 1.2},
+  "output": {"driver": "fpga", "ok": true, "error": null, "fps": 59.9, "render_ms": 1.2,
              // driver "fpga" adds, among its counters:
              // "address": "10.75.38.201:5775" | null (no card yet), "answering": true,
              // "found": {"ip", "port", "mac", "uid" (hex), "uid_valid", "fixed_address", "fw", "auto"} | null,
              // "others": [{"ip", "port", "mac", "uid", "uid_valid", "fixed_address", "fw"}, …]   (cards heard, not driven)
+            },
   "audio": {"ok": true, "error": null, "device": "…", "device_name": "…", "volume": 0.8, "voices": 1},
-  "checks": [{"id": "output.link", "level": "error" | "warning" | "info" | "ok",
-              "title": "The link is not gigabit", "detail": "…", "fix": "…" | null}, …],
+  "checks": [{"id": "output.receiver", "level": "error" | "warning" | "info" | "ok",
+              "title": "The LED card does not answer", "detail": "…", "fix": "…" | null}, …],
   "sets_rev": 12, "media_rev": 3,                  // bump when sets / media change: refetch
   "version": "0.1.0"
 }
@@ -310,22 +310,22 @@ State = {
 `output` and `audio` also carry `problems`: the failures in the same shape
 as a check, from the code that detects them. **`checks`** (built in
 `trafficlight/checks.py`) is the setup list for the UI, most basic first,
-leaving out what cannot be known yet (no link: nothing about the card).
-Levels: `error` = the sign or the sound cannot work, `warning` = works but
-something is off, `info` = a neutral note or hint (driver set to none,
-panel wiring still the default), `ok`. Ids: `output.driver` (off / on /
-cannot start), `output.interface` (none chosen, not found), `output.access`
-(Npcap missing, Npcap admin-only, no CAP_NET_RAW, cannot open),
-`output.settings`, `output.link` (down, not gigabit), `output.send`,
-`output.receiver` (not answering), `output.card_size` (not 128×512),
+leaving out what cannot be known yet (no answer: nothing about the card's
+firmware). Levels: `error` = the sign or the sound cannot work, `warning` =
+works but something is off, `info` = a neutral note or hint (driver set to
+none, panel wiring still the default), `ok`. Ids, in this order:
+`output.driver` (off / on / cannot start), `output.settings` (a card address
+that does not resolve, wiring values that do not fit), `output.access` (the UDP
+socket cannot be opened, or the announce port 5776 is taken by another
+server), `output.send` (sending fails: usually the port has no address in the
+card's network), `output.receiver` (card found and answering, nothing found,
+announces but does not answer, a pinned address that does not answer),
+`output.cards` (other cards heard and not driven), `output.firmware`
+(version, fits this sign), `output.schedule` (refresh schedule built and
+accepted, fewer planes than planned, rejected), `output.packets` (card drops
+packets or loses frames), `output.timing` (card refresh stretching),
 `output.wiring`, `audio.backend` (PortAudio missing), `audio.device`
-(missing, none, cannot open, stopped), `server.web_ui` (not built). The custom firmware
-driver has no interface or link checks (plain UDP; `output.access` is the socket, or the announce port 5776
-taken by another server); it adds `output.receiver` (card found and answering, nothing found, announces but
-does not answer, a pinned address that does not answer), `output.cards` (other cards heard and not driven),
-`output.firmware` (version, fits this sign),
-`output.schedule` (refresh schedule built and accepted, fewer planes than planned, rejected),
-`output.packets` (card drops packets or loses frames) and `output.timing` (card refresh stretching).
+(missing, none, cannot open, stopped), `server.web_ui` (not built).
 
 ## WebSockets
 
@@ -411,8 +411,8 @@ class OutputDriver:
     def send(self, frame): ...          # (384,128,3) RGB, mapped by the driver (order, flips, rotation, colours)
     def send_card(self, image): ...     # (CARD_H,128,3) RGB already in the card's layout: colour order, gamma,
                                         # brightness only (the wiring picture); NullDriver ignores it
-    def set_frame_rate(self, fps): ...  # Settings.fps, from the engine; Colorlight paces its display packets on it, the FPGA driver builds the card's refresh schedule for it
-    def status(self) -> dict: ...       # {"driver", "ok", "error", "interface", ..., "problems": [check-shaped dicts]}
+    def set_frame_rate(self, fps): ...  # Settings.fps, from the engine; the driver builds the card's refresh schedule for it
+    def status(self) -> dict: ...       # {"driver", "ok", "error", ..., "problems": [check-shaped dicts]}
 class OutputError(RuntimeError):        # OutputError(detail, fix, check="output.access", title=...): str() is the
                                         # whole message; as_problem() the check entry
 

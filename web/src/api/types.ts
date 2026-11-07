@@ -47,13 +47,13 @@ export interface SetSummary {
 /** Body for POST /api/sets: everything optional except what you want to set. */
 export type NewSet = Partial<SetData>;
 
-export type OutputDriver = 'colorlight' | 'fpga' | 'none';
+/** fpga = the card with our firmware (docs/FIRMWARE.md); none = no sign, the preview only. */
+export type OutputDriver = 'fpga' | 'none';
 export type ColorOrder = 'rgb' | 'rbg' | 'grb' | 'gbr' | 'brg' | 'bgr';
 
 export interface OutputSettings {
   driver: OutputDriver;
-  interface: string | null;
-  /** fpga: '' = automatic (the card announces itself), else the card's address (pinned). */
+  /** '' = automatic (the card announces itself), else the card's address (pinned). */
   card_address: string;
   card_port: number;
   brightness: number;
@@ -190,10 +190,9 @@ export interface Problem {
 export type NowSource = 'schedule' | 'show' | 'editor' | 'test' | 'idle';
 
 /** One setup check (trafficlight/checks.py). error = the sign or the sound cannot work; warning = works, but
- * something is off; info = a neutral note or a hint; ok = fine. Ids are stable: output.driver, output.interface,
- * output.access, output.settings, output.link, output.send, output.receiver, output.card_size, output.wiring,
- * audio.backend, audio.device, server.web_ui; the custom firmware adds output.cards, output.firmware,
- * output.schedule, output.packets, output.timing. */
+ * something is off; info = a neutral note or a hint; ok = fine. Ids are stable: output.driver, output.settings,
+ * output.access, output.send, output.receiver, output.cards, output.firmware, output.schedule, output.packets,
+ * output.timing, output.wiring, audio.backend, audio.device, server.web_ui. */
 export type CheckLevel = 'error' | 'warning' | 'info' | 'ok';
 export interface SetupCheck {
   id: string;
@@ -228,7 +227,7 @@ export interface State {
     random_in: number | null;
   };
   output: {
-    driver: string; ok: boolean; error: string | null; interface: string | null; fps: number;
+    driver: string; ok: boolean; error: string | null; fps: number;
     // fpga only: where the card is driven ("ip:port", null until found), whether it answers, the card in use
     // (auto: found by its announcements rather than set in the settings) and other cards heard.
     address?: string | null;
@@ -249,14 +248,6 @@ export interface AudioDevice {
   default: boolean;
   channels: number;
 }
-export interface NetInterface {
-  id: string;
-  name: string;
-  description: string;
-  mac: string;
-  up: boolean;
-}
-
 export type TestPattern = 'off' | 'panels' | 'white' | 'red' | 'green' | 'blue' | 'gradient' | 'wiring';
 export type ShowTarget = 'face0' | 'face1' | 'face2' | 'all' | 'faces';
 export interface Peaks {

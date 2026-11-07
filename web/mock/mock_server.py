@@ -28,7 +28,7 @@ def sset(name, bpm=120, dur=30, rot=True):
 
 sets = [sset("Morning"), sset("Disco", 128, 60), sset("Quiet hours", 90, 120, False)]
 settings = {
-    "output": {"driver": "colorlight", "interface": "eth0", "card_address": "", "card_port": 5775, "brightness": 0.5, "gamma": 1.0, "rotate180": False,
+    "output": {"driver": "fpga", "card_address": "", "card_port": 5775, "brightness": 0.5, "gamma": 2.2, "rotate180": False,
                "panel_order": [0, 1, 2, 3, 4, 5], "panel_flip": [False, False, True, False, False, False], "color_order": "rgb"},
     "audio": {"device": None, "volume": 0.8},
     "schedule": {"default_set": sets[0]["id"], "random_minutes": 6, "random_enabled": True},
@@ -61,14 +61,14 @@ def frame(t: float, set_idx: int = 0) -> bytes:
 def output_state():
     o = settings["output"]
     if o["driver"] != "fpga":
-        return {"driver": o["driver"], "ok": False, "error": "Npcap not installed (mock)", "interface": "eth0", "fps": 59.9}
+        return {"driver": o["driver"], "ok": True, "error": None, "fps": 59.9}
     # The custom firmware: one card found (at the pinned address if one is set), a second one heard.
     ip = o["card_address"] or "10.75.38.201"
     card = {"ip": ip, "port": 5775, "mac": "02:5a:75:00:26:c9", "uid": "e6614c311b5a2f30", "uid_valid": True,
             "fixed_address": False, "fw": "0.1"}
     other = {"ip": "10.75.112.7", "port": 5775, "mac": "02:5a:75:00:70:07", "uid": "e6614c311b5a7e41", "uid_valid": True,
              "fixed_address": False, "fw": "0.1"}
-    return {"driver": "fpga", "ok": True, "error": None, "interface": None, "fps": 59.9, "address": f"{ip}:5775",
+    return {"driver": "fpga", "ok": True, "error": None, "fps": 59.9, "address": f"{ip}:5775",
             "answering": True, "found": {**card, "auto": not o["card_address"]}, "others": [other]}
 
 
@@ -161,9 +161,6 @@ async def patch_settings(r: Request):
 
 @app.get("/api/audio/devices")
 def devices(): return [{"id": "d1", "name": "Speakers (Realtek)", "default": True, "channels": 2}, {"id": "d2", "name": "USB DAC", "default": False, "channels": 2}]
-
-@app.get("/api/output/interfaces")
-def ifaces(): return [{"id": "eth0", "name": "Ethernet", "description": "Intel I219", "mac": "aa:bb", "up": True}, {"id": "wlan0", "name": "Wi-Fi", "description": "", "mac": "cc:dd", "up": False}]
 
 @app.post("/api/output/test")
 async def test(r: Request): return {"ok": True}

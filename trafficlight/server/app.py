@@ -30,7 +30,7 @@ from .. import __version__, bundle, config
 from ..audio.base import AudioEngine, create_audio_engine
 from ..engine import Engine, EditorSession, encode_png
 from ..model import Clip, MediaEdit, MediaItem, Set, default_tracks
-from ..output.base import create_driver, list_interfaces
+from ..output.base import create_driver
 from ..player import render_still, validate_set
 from ..store import SetExists, Store, valid_id
 
@@ -306,10 +306,6 @@ def create_app(data_dir: Optional[Path] = None, *, store: Optional[Store] = None
         except Exception:
             log.exception("listing audio devices")
             return []
-
-    @app.get("/api/output/interfaces")
-    def output_interfaces() -> list[dict]:
-        return [i.to_json() for i in list_interfaces()]
 
     @app.post("/api/output/test")
     def output_test(body: dict = Body(...)) -> dict:

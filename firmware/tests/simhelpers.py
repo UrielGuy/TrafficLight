@@ -43,7 +43,7 @@ def le32(v: int) -> bytes:
 
 
 class FlashModel:
-    """A W25Q32JV answering command 0x4B with `uid` (8 bytes), on the reader's SPI lines, as a
+    """A configuration flash (GD25Q32 / W25Q32JV) answering command 0x4B with `uid` (8 bytes), on the reader's SPI lines, as a
     simulation generator. It shifts SI in at SCK rising edges and its id bits out after falling
     edges, and records what it saw: the bytes received, SCK half-periods and any SPI mode 0
     violation (SCK high when CS# moves, SI moving in the cycle of a rising edge)."""

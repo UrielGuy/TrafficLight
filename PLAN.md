@@ -2,10 +2,11 @@
 
 ## Decisions (2026-11-04)
 
-* **Controller:** Colorlight 5A-75B with its stock firmware; frames go out as
-  raw Ethernet (Npcap on Windows, AF_PACKET on the Pi). One-time panel setup
-  in LEDVision. Hardware exists but is not wired yet → build against a
-  preview / packet tests first, bring-up with the user later.
+* **Controller:** Colorlight 5A-75B. First with its stock firmware (raw
+  Ethernet, panel setup in LEDVision); since 2026-11-06 with our own firmware
+  over UDP (`docs/FIRMWARE.md`), and on 2026-11-07 the stock-firmware driver
+  was removed. Build against a preview / packet tests first, bring-up with
+  the user later.
 * **Audio:** output only. Music and video sound on the timeline play on an
   output device chosen in the UI. Tempo is set per set (no live beat detection).
 * **Stack:** Python backend (FastAPI, numpy, Pillow, PyAV, sounddevice);
@@ -29,7 +30,7 @@ Wave 1 — in parallel, each owns its files only:
 | # | Package | Owns | Size |
 | --- | --- | --- | --- |
 | 1 | Core: store, schedule, player, engine, HTTP/WebSocket server | `store.py`, `schedule.py`, `player.py`, `engine.py`, `server/`, `__main__.py` | large |
-| 2 | Colorlight output driver, panel mapping, test patterns, bring-up guide | `output/` (not `base.py`), `tools/testpattern.py`, `docs/HARDWARE.md` | large |
+| 2 | Output driver (then for the stock firmware), panel mapping, test patterns, bring-up guide | `output/` (not `base.py`), `tools/testpattern.py`, `docs/HARDWARE.md` | large |
 | 3 | Light, text (Hebrew/English fitting), figures | `render/basic/`, `assets/fonts/` | large |
 | 4 | Beat animations and clock | `render/fx/` | medium |
 | 5 | Media library, video / image / audio clip types | `media/`, `render/media/` | large |
@@ -44,5 +45,5 @@ Wave 2 — after wave 1 is integrated:
 | 9 | Run / install scripts for Windows and the Pi, README | `scripts/`, `README.md` | small |
 | 10 | Integration: real server + UI in a browser, a demo set, fix what the seams reveal | everything | lead |
 
-Later, with the user: hardware bring-up (LEDVision setup, wiring, mapping,
+Later, with the user: hardware bring-up (card firmware, wiring, mapping,
 brightness, refresh), performance check on the Pi.
