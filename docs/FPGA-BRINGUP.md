@@ -403,10 +403,11 @@ Notes:
   [confirm; not run].
 * `-f` erases only the sectors it writes. A raw `.bin` of 4 MiB from offset 0
   rewrites the whole stock image. After the write, power-cycle the card.
-* If a write fails with a protection error, try `--unprotect-flash` once.
-  WP# is tied high on V8.x and we found no report of a protected flash on
-  these cards; chubby75 issue #129 shows someone dumping a V8.2 flash with
-  openFPGALoader without any workaround.
+* The stock firmware leaves the flash write-protected (status register
+  0x1c on the sign's card): the first write needs `--unprotect-flash`. WP# is
+  tied high, so this clears it. Flash access through JTAG has no CRC and is
+  sensitive to TCK ringing: see firmware/README.md (Building) for what
+  it took on 2026-11-07.
 * Writing the flash is not needed for development: use step 2 until the
   gateware works, so a bad bitstream is gone after a power cycle.
 

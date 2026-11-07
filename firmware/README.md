@@ -46,7 +46,24 @@ Options: `--eth-phy 0|1` (which RJ45; default 1, the socket the sign's cable use
 `--no-run` (write Verilog and scripts only). Load with SRAM only until it works:
 `openFPGALoader -c dirtyJtag --freq 1000000 -m <file>.bit` (docs/FPGA-BRINGUP.md section 5). The Pico's
 default 6 MHz JTAG clock corrupted loads on 2026-11-07 ("EXEC Error", or a garbled idcode); 1 MHz
-was reliable. Write the flash the same way: `openFPGALoader -c dirtyJtag --freq 1000000 -f --verify <file>.bit`.
+was reliable. Write the flash with `openFPGALoader -c dirtyJtag --freq 1000000 --unprotect-flash -f <file>.bit`
+(done on 2026-11-07 with abe4622; the card has started from flash since). Three things learnt doing it:
+
+* The stock firmware leaves the flash write-protected (status register 0x1c, every block), so the
+  first write needs `--unprotect-flash`; without it openFPGALoader stops at "block protection is set".
+* Flash access through JTAG has no checksum: the flash's SCK is TCK passed through the FPGA, and an
+  extra edge from ringing shifts every bit after it. With ~20 cm leads and the card's only GND pad
+  far from the JTAG pads, reads slipped every few dozen bytes at any clock; a 47-68 Ω resistor in
+  series with TCK at the Pico pin made it about once per 0.5-1 MB. SRAM loads carry the
+  bitstream's CRC and are not at risk.
+* So `--verify` and read-backs are not proof (they can slip even when the flash is right), and each
+  read of an unprotected flash risks a slipped command. The proof is the start from flash: the FPGA
+  loads only an image whose CRC is right; check the card answers after a power cycle. openFPGALoader
+  writes the bitstream without the .bit file's text header (28 bytes for ours), so a read-back starts
+  at the sync word.
+
+Once the card has started from flash and stopped answering status requests after a JTAG
+`Refresh` (it kept announcing and answering ping); a power cycle cleared it and it has not come back.
 
 ### The card's address
 
