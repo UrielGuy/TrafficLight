@@ -2,6 +2,7 @@
 messages with their payload in the FIFO; short, malformed, unknown and errored ones are counted
 and leave nothing behind; packets that do not fit are dropped whole."""
 import os
+import struct
 
 import pytest
 from migen import *
@@ -11,7 +12,7 @@ from trafficlight.output.hub75 import protocol as P
 from trafficlight.output.hub75.schedule import BUFFER_BYTES, MAX_COLS, MAX_ENTRIES, MAX_PLANES, MAX_ROWS, MIN_VISIT_TICKS, build
 
 from tlcard import constants as C
-from tlcard.packet import KIND_CHUNK, KIND_COMMIT, KIND_SCHEDULE, KIND_STATUS, PacketParser
+from tlcard.packet import KIND_ANNOUNCE, KIND_CHUNK, KIND_COMMIT, KIND_SCHEDULE, KIND_STATUS, PacketParser
 from simhelpers import send_datagram
 
 
@@ -19,11 +20,25 @@ def test_constants_match_host_package():
     assert C.MAGIC_WORD == int.from_bytes(P.MAGIC, "little")
     assert (C.BUFFER_BYTES, C.MAX_CHUNKS, C.MAX_CHUNK_DATA, C.STATUS_BYTES) == \
         (BUFFER_BYTES, P.MAX_CHUNKS, P.MAX_CHUNK_DATA, P.STATUS_BYTES)
-    assert (C.UDP_PORT, C.CARD_IP) == (P.PORT, P.CARD_IP)
-    assert C.CARD_MAC == int(P.CARD_MAC.replace(":", ""), 16)
+    assert C.UDP_PORT == P.PORT
     assert (C.ERR_STALE, C.ERR_BAD_PACKET, C.FLAG_BLANK) == (P.ERR_STALE, P.ERR_BAD_PACKET, P.FLAG_BLANK)
     assert (C.MIN_VISIT_TICKS, C.MAX_ENTRIES, C.MAX_ROWS, C.MAX_COLS, C.MAX_PLANES) == \
         (MIN_VISIT_TICKS, MAX_ENTRIES, MAX_ROWS, MAX_COLS, MAX_PLANES)
+
+
+def test_announce_constants_match_host_package():
+    if not hasattr(P, "ANNOUNCE_PORT"):
+        pytest.skip("the host package has no ANNOUNCE numbers yet")
+    assert (C.ANNOUNCE_PORT, C.TYPE_ANNOUNCE_REQ, C.TYPE_ANNOUNCE, C.ANNOUNCE_BYTES) == \
+        (P.ANNOUNCE_PORT, P.TYPE_ANNOUNCE_REQ, P.TYPE_ANNOUNCE, P.ANNOUNCE_BODY_BYTES)
+
+
+def announce_request(seq=0):
+    return struct.pack("<4sBBHII", b"5A75", 1, C.TYPE_ANNOUNCE_REQ, 0, seq, 0)
+
+
+def announce(body=bytes(C.ANNOUNCE_BYTES)):
+    return struct.pack("<4sBBHII", b"5A75", 1, C.TYPE_ANNOUNCE, len(body), 0, 0) + body
 
 
 class Harness:
@@ -123,17 +138,27 @@ def test_schedule_table_words():
     ("commit wrong size", P.build_frame_commit(1, 2, 3, 4) + bytes(8)),
     ("schedule not a multiple of 8", P.build_schedule(build().to_bytes()) + bytes(4)),
     ("status echo wrong size", P.build_status(P.Status())[:-4]),
+    ("announce request with a body", announce_request() + bytes(4)),
+    ("announce echo wrong size", announce(bytes(28))),
 ])
 def test_bad_packets_are_counted_and_leave_nothing(name, datagram):
     # Fix up the body-length field where the test wants a consistent header with a bad body.
     if name in ("chunk length wrong", "commit wrong size", "schedule not a multiple of 8", "status echo wrong size",
-                "chunk header short"):
+                "chunk header short", "announce request with a body"):
         body = len(datagram) - 16
         datagram = datagram[:6] + body.to_bytes(2, "little") + datagram[8:]
     h = Harness(fifo_words=1024).run([datagram, P.build_status_request(seq=1)])
     assert h.bad == 1, name
     assert h.dropped == 0 and h.words == []
     assert [m["kind"] for m in h.msgs] == [KIND_STATUS] and h.msgs[0]["seq"] == 1
+
+
+def test_announce_request_is_a_message_and_an_announce_is_ignored():
+    h = Harness().run([announce_request(seq=0x55), announce(), P.build_status_request(seq=3)],
+                      src_port=5776, src_ip=0x0A4B0001)
+    assert h.bad == 0 and h.dropped == 0 and h.words == []
+    assert [m["kind"] for m in h.msgs] == [KIND_ANNOUNCE, KIND_STATUS]
+    assert (h.msgs[0]["seq"], h.msgs[0]["src_port"], h.msgs[0]["src_ip"]) == (0x55, 5776, 0x0A4B0001)
 
 
 def test_status_echo_is_ignored_silently():

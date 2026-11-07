@@ -1,12 +1,15 @@
 """Everything between the UDP port and the HUB75 pins, with the SDRAM behind an access interface
-(sdram.SdramAccess on the card, a Python model in the tests)."""
+(sdram.SdramAccess on the card, a Python model in the tests), and the card's identity: the flash
+id reader's SPI lines (`flash`) and the addresses for LiteEth (`ip`, `mac`)."""
 from migen import *
 
 from litex.gen import *
 
 from . import constants as C
+from .identity import CardAddress, FlashUidReader
 from .packet import PacketParser
-from .receiver import Receiver, StatusReply
+from .receiver import Receiver
+from .reply import Replies
 from .streamer import Fetcher, Sequencer, Shifter, LB_COLS
 
 hub75_layout = [
@@ -19,10 +22,14 @@ hub75_layout = [
 
 
 class CardCore(Module):
-    def __init__(self, tick_hz, access, fw_build=0, pattern=False, pattern_table=C.PATTERN_TABLE):
+    def __init__(self, tick_hz, access, fw_build=0, pattern=False, pattern_table=C.PATTERN_TABLE, address=None):
+        """address: None derives IP and MAC from the flash id; (ip, mac) as LiteEth integers fixes them."""
+        self.submodules.flash = flash = FlashUidReader(tick_hz)
+        self.submodules.ident = ident = CardAddress(fixed=address)
+        self.ip, self.mac = ident.ip, ident.mac
         self.submodules.parser = parser = PacketParser()
         self.submodules.rx = rx = Receiver(tick_hz, pattern=pattern, pattern_table=pattern_table)
-        self.submodules.reply = reply = StatusReply(rx, tick_hz, fw_build)
+        self.submodules.reply = reply = Replies(rx, ident, tick_hz, fw_build)
         self.udp_sink = parser.sink
         self.udp_source = reply.source
         self.hub75 = Record(hub75_layout)
@@ -32,14 +39,15 @@ class CardCore(Module):
 
         fifo = parser.fifo
         self.comb += [
+            ident.uid.eq(flash.uid), ident.load.eq(flash.done),
             parser.source.connect(rx.sink),
             rx.fifo_dout.eq(fifo.dout), rx.fifo_readable.eq(fifo.readable), fifo.re.eq(rx.fifo_re),
             rx.bad_packet.eq(parser.bad_packet),
             rx.counters.inc["rx_dropped"].eq(parser.dropped),
             access.wr_start.eq(rx.wr_start), access.wr_addr.eq(rx.wr_addr), access.wr_count.eq(rx.wr_count),
             access.wr_data.eq(fifo.dout), rx.wr_pop.eq(access.wr_pop), rx.wr_done.eq(access.wr_done),
-            reply.start.eq(rx.reply_start), reply.seq.eq(rx.reply_seq), reply.port.eq(rx.reply_port),
-            reply.ip.eq(rx.reply_ip), rx.reply_busy.eq(reply.busy),
+            reply.start.eq(rx.reply_start), reply.announce.eq(rx.reply_announce), reply.seq.eq(rx.reply_seq),
+            reply.port.eq(rx.reply_port), reply.ip.eq(rx.reply_ip), rx.reply_busy.eq(reply.busy),
         ]
 
         lb_mem = Memory(C.LANES, 2 * LB_COLS)

@@ -312,23 +312,52 @@ sequential reads per entry.
 
 ### 6.1 Addressing
 
-* The card has a fixed IPv4 address and MAC built into the gateware:
-  **10.75.0.2**, netmask 255.255.255.0, MAC `02:5a:75:00:00:02` (locally
-  administered). The host uses **10.75.0.1/24** on the dedicated port
-  (static, configurable in the host settings; the card's address is a
-  host setting too, default 10.75.0.2). To change the card's address:
-  rebuild with other constants. A later gateware could read it from the
-  flash; the protocol does not care.
+The network is **10.75.0.0/16**, kept for the sign: nothing else lives on it.
+
+* **Hosts: 10.75.0.0/24.** The host computer is **10.75.0.1**, netmask
+  **255.255.0.0** (the /16 mask matters: the cards are outside 10.75.0.x).
+  Further hosts, if ever, take 10.75.0.2 and up. No card ever uses 10.75.0.x.
+* **Cards: 10.75.1.1 .. 10.75.254.254**, each deriving its own address at
+  power-up from the 64-bit unique id of its configuration flash (W25Q32JV
+  command 0x4B: 4 dummy bytes, then 8 id bytes; read once, a few microseconds
+  after the design starts):
+
+  ```
+  uid   = the 8 id bytes as a big-endian integer (first byte read = most significant)
+  fold  = (uid >> 48) ^ (uid >> 32) ^ (uid >> 16) ^ uid, low 16 bits
+  c, d  = fold >> 8, fold & 0xFF;  each: 0 -> 1, 255 -> 254
+  IP    = 10.75.c.d               MAC = 02:5a:75:00:c:d (locally administered)
+  ```
+
+  A flash that cannot be read gives an all-0 or all-1 id; both fold to 0,
+  so every such card is 10.75.1.1 (they would collide with each other).
+  The fold keeps cards from one batch apart (their ids differ in a few low
+  bits); two cards collide with odds of about 1 in 64,000 per pair. A flash
+  that does not answer (all bits 0 or 1) still gives an address, and the
+  announcement says the id is not valid.
+* A build can still fix the address (`firmware/build.py --ip 10.75.c.d`):
+  then the MAC is 02:5a:75:00:c:d unless `--mac` is given, and the flash is
+  not used for it (its id is still read and announced). The default build is
+  `--ip auto` (the rule above).
+* **Finding the card: announcements.** Every second the card broadcasts an
+  ANNOUNCE (section 6.7) from port 5775 to **10.75.255.255:5776**. A host
+  can also ask: an ANNOUNCE_REQ to 10.75.255.255:5775 (or straight to a
+  card) is answered with an ANNOUNCE sent to the request's source IP and
+  port. Asking is what works through a host firewall that drops unsolicited
+  broadcasts (Windows lets a unicast answer to its own broadcast through):
+  the host sends the request from the socket it listens on, port 5776.
 * The card answers ARP for its address and ICMP echo (LiteEth does both),
-  so `ping 10.75.0.2` is the first test.
+  so `ping 10.75.c.d` works once the card is known.
 * UDP port **5775** on the card. Every reply goes to the source IP and port
-  of the request. The card also answers requests sent to the broadcast
-  address (10.75.0.255 or 255.255.255.255), which is how a host finds the
-  card without knowing anything: broadcast a status request, read the
-  reply's source.
+  of the request. The card accepts datagrams sent to any IP address that
+  reach its MAC or the broadcast MAC (LiteEth's IP broadcast mode), so
+  requests to 10.75.255.255 reach every card.
 * MTU 1500: UDP payload at most 1472 bytes. No jumbo frames (the PC uses a
   USB gigabit adapter). The host uses ordinary UDP sockets: no
   administrator rights, no Npcap, no `CAP_NET_RAW`.
+* One host drives one card. More than one card on the network is foreseen
+  (each has its own address, all announce); a host that drives several is
+  later work.
 
 ### 6.2 Common header (16 bytes, all integers little-endian)
 
@@ -347,7 +376,9 @@ sequential reads per entry.
 | 0x02 | FRAME_DATA | host -> card | none |
 | 0x03 | FRAME_COMMIT | host -> card | none |
 | 0x04 | SCHEDULE | host -> card | STATUS (carries the result) |
+| 0x05 | ANNOUNCE_REQ | host -> card(s) | ANNOUNCE |
 | 0x81 | STATUS | card -> host | — |
+| 0x82 | ANNOUNCE | card -> host / broadcast | — |
 
 A datagram with a wrong magic, version, type, or a body length that does
 not match is dropped and counted in `bad_packets`; `last_error` = 1.
@@ -477,6 +508,30 @@ reply with a smaller `uptime_ms`, or without `sched_active`, means the card
 restarted and needs its schedule again; `frames_incomplete`,
 `rx_dropped` or `underruns` growing means packets are being lost or the
 schedule is too tight.
+
+### 6.7 ANNOUNCE_REQ (type 0x05) and ANNOUNCE (type 0x82)
+
+ANNOUNCE_REQ has no body (one with a body is a bad packet). ANNOUNCE's body is 32 bytes. Addresses are in
+network order (as written: 10, 75, c, d), unlike the rest of the protocol:
+
+| Offset | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 1 | proto_version | 1 |
+| 1 | 1 | fw_major | |
+| 2 | 1 | fw_minor | |
+| 3 | 1 | flags | bit 0 uid_valid (the flash answered: not all 0 or all 1), bit 1 fixed_address (built with `--ip`), bit 2 have_frame (as in STATUS) |
+| 4 | 4 | fw_build | as in STATUS |
+| 8 | 8 | uid | the flash id bytes in the order read |
+| 16 | 6 | mac | network order |
+| 22 | 2 | udp_port | 5775 (little-endian, like every other integer) |
+| 24 | 4 | ip | network order |
+| 28 | 4 | uptime_ms | as in STATUS |
+
+`seq` in the header: the request's seq in an answer; in a periodic
+broadcast, the number of broadcasts sent before it since power-up (the first
+is 0). The first broadcast goes
+out 0.5 s + (fold & 0xFF) ms after power-up, then one every second, so cards
+powered together do not all speak at once.
 
 ## 7. State machines
 
@@ -611,10 +666,11 @@ fields. A frame sent for the wrong schedule is rejected, never shown.
 ### Using the custom firmware
 
 The driver is `trafficlight/output/fpga.py` (`FpgaDriver`). Plug the PC's
-network port into the card, give that port 10.75.0.1/24, check
-`ping 10.75.0.2`, then choose **Custom firmware** in Settings → LED output
-(the card address field defaults to the firmware's 10.75.0.2; the UI sets
-gamma to 2.2 when switching, as this card is linear). The setup checks list
+network port into the card and give that port 10.75.0.1 with netmask
+255.255.0.0 (section 6.1). The card announces itself; the card address in
+Settings → LED output is Automatic by default and shows the card found
+(`ping` its address to check the link by hand). Gamma is 2.2, as this card is
+linear. The setup checks list
 whether the card answers, its firmware version, the schedule it runs and
 whether it loses packets. Notes on what the driver does beyond the list above:
 
@@ -675,7 +731,7 @@ Hardware:
 
 User decisions:
 
-8. The card's address 10.75.0.2/24 and port 5775 (built in).
+8. Settled (2026-11-07): the card derives 10.75.c.d from its flash id and announces itself (6.1); port 5775.
 9. Whether a dark card until the host connects is acceptable (section
    7.4): a built-in default schedule would only light garbage anyway, since
    no frame exists at power-up.
@@ -707,3 +763,10 @@ Gateware implementation notes (firmware/, 2026-11-06; see firmware/README.md):
     column of the panel seen from the front. J1..J6's colour pins all drive their panel
     as the table says (lane order 6c + s); J7 and J8 use the same table and have no panel
     to check them with. These are the gateware's defaults.
+16. Ethernet on the V8.2 card (2026-11-06): both PHYs answer MDIO only at address 0 and read
+    id 0x001C / 0xC858 (Realtek, not the RTL8211F's 0xC916). RGMII works at gigabit with
+    `tx_delay` 0 (the PHY delays the TX clock itself; 2 ns in the FPGA gives no frames) and
+    `rx_delay` 2 ns: the build defaults. The gateware listens on one PHY only: the tested
+    card has its cable in PHY1's socket (`--eth-phy 1`). The PHY also makes the FPGA's 25 MHz
+    clock (P6), so its reset (R6) must never be held low: the clock stops and the design
+    with it. The gateware keeps it high.

@@ -1,5 +1,6 @@
-"""The whole card without Ethernet and SDRAM silicon: CardCore on a Python-backed SDRAM, driven
-with real datagrams, with its HUB75 pins traced and its status replies decoded."""
+"""The whole card without Ethernet and SDRAM silicon: CardCore on a Python-backed SDRAM and a
+behavioural flash, driven with real datagrams, with its HUB75 pins traced and its replies
+(STATUS and ANNOUNCE, with their destinations) decoded."""
 from __future__ import annotations
 
 import os
@@ -12,7 +13,9 @@ from trafficlight.output.hub75 import protocol as P
 
 from tlcard import constants as C
 from tlcard.core import CardCore
-from simhelpers import send_datagram
+from simhelpers import FlashModel, parse_announce, send_datagram
+
+UID = bytes.fromhex("e4683c2a1b0f5d87")
 
 
 class FakeSdram(Module):
@@ -84,6 +87,16 @@ class FakeSdram(Module):
 
 
 @dataclass
+class Sent:
+    """One datagram from the card's UDP port: destination and fields."""
+    ip: int
+    port: int
+    src_port: int
+    msg: object             # P.Status, or the ANNOUNCE's fields (simhelpers.parse_announce)
+    cycle: int              # of the last word
+
+
+@dataclass
 class Trace:
     cycle: int
     clk: int
@@ -138,12 +151,17 @@ class CardSim:
     """Build the core on a FakeSdram; `run(script)` executes a generator that sends datagrams
     (through `self.send`) and waits (`self.wait`), while the pins and replies are recorded."""
 
-    def __init__(self, tick_hz=C.DEFAULT_TICK_HZ, pattern=False, pattern_table=C.PATTERN_TABLE, read_latency=6):
+    def __init__(self, tick_hz=C.DEFAULT_TICK_HZ, pattern=False, pattern_table=C.PATTERN_TABLE, read_latency=6,
+                 uid=UID, address=None):
         self.sdram = FakeSdram(read_latency=read_latency)
-        self.dut = CardCore(tick_hz, self.sdram, fw_build=0x20261106, pattern=pattern, pattern_table=pattern_table)
+        self.dut = CardCore(tick_hz, self.sdram, fw_build=0x20261106, pattern=pattern, pattern_table=pattern_table,
+                            address=address)
         self.dut.submodules.sdram = self.sdram
+        self.flash = FlashModel(self.dut.flash, uid)
         self.trace: list[Trace] = []
         self.replies: list[P.Status] = []
+        self.announces: list[Sent] = []
+        self.sent: list[Sent] = []          # every datagram, STATUS and ANNOUNCE, in order
         self.cycle = 0
 
     def send(self, datagram: bytes, **kw):
@@ -171,12 +189,27 @@ class CardSim:
                 words.append((yield src.data))
                 if (yield src.last):
                     data = b"".join(w.to_bytes(4, "little") for w in words)
-                    self.replies.append(P.parse(data))
+                    assert (yield src.length) == len(data)
+                    dest = ((yield src.ip_address), (yield src.dst_port), (yield src.src_port))
+                    if data[5] == C.TYPE_ANNOUNCE:
+                        sent = Sent(*dest, parse_announce(data), self.cycle)
+                        self.announces.append(sent)
+                    else:
+                        status = P.parse(data)
+                        self.replies.append(status)
+                        sent = Sent(*dest, status, self.cycle)
+                    self.sent.append(sent)
                     words = []
             yield
 
     def run(self, script):
-        run_simulation(self.dut, [script, self.sdram.run(), self._trace(), self._replies()],
+        """The script starts once the flash id is read: a few microseconds on the card, which
+        answers nothing before."""
+        def gen():
+            while not (yield self.dut.ident.ready):
+                yield
+            yield from script
+        run_simulation(self.dut, [gen(), self.sdram.run(), self.flash.run(), self._trace(), self._replies()],
                        vcd_name=os.environ.get("TLCARD_VCD"))
         return self
 

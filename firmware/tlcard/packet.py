@@ -15,13 +15,13 @@ from liteeth.common import eth_udp_user_description
 
 from . import constants as C
 
-KIND_CHUNK, KIND_COMMIT, KIND_SCHEDULE, KIND_STATUS = 0, 1, 2, 3
+KIND_CHUNK, KIND_COMMIT, KIND_SCHEDULE, KIND_STATUS, KIND_ANNOUNCE = 0, 1, 2, 3, 4
 
 # Chunk: frame_id, index, words, offset_words, range_bad. Commit: frame_id, sched_id, frame_bytes,
-# chunk_count. Schedule: words (table words in the data FIFO), seq, src_port, src_ip. Status: seq,
-# src_port, src_ip.
+# chunk_count. Schedule: words (table words in the data FIFO), seq, src_port, src_ip. Status and
+# announce requests: seq, src_port, src_ip.
 msg_layout = [
-    ("kind", 2),
+    ("kind", 3),
     ("frame_id", 32),
     ("index", 9),
     ("words", 10),
@@ -137,7 +137,9 @@ class PacketParser(LiteXModule):
                     (chunk_index < C.MAX_CHUNKS) & (words_total == chunk_len[2:12]))
         commit_ok = body_len == 16
         sched_ok = (body_len >= C.SCHEDULE_HEADER_BYTES) & ((body_len - C.SCHEDULE_HEADER_BYTES)[0:3] == 0)
-        status_echo_ok = body_len == C.STATUS_BYTES      # a STATUS sent to the card: well-formed, ignored
+        # A STATUS or ANNOUNCE sent to the card: well-formed, ignored.
+        status_echo_ok = body_len == C.STATUS_BYTES
+        announce_echo_ok = body_len == C.ANNOUNCE_BYTES
         type_ok = Signal()
         emit = Signal()
         self.comb += Case(ptype, {
@@ -145,7 +147,9 @@ class PacketParser(LiteXModule):
             C.TYPE_FRAME_COMMIT: [type_ok.eq(commit_ok), emit.eq(1)],
             C.TYPE_SCHEDULE: [type_ok.eq(sched_ok), emit.eq(1)],
             C.TYPE_STATUS_REQ: [type_ok.eq(1), emit.eq(1)],
+            C.TYPE_ANNOUNCE_REQ: [type_ok.eq(body_len == 0), emit.eq(1)],
             C.TYPE_STATUS: [type_ok.eq(status_echo_ok), emit.eq(0)],
+            C.TYPE_ANNOUNCE: [type_ok.eq(announce_echo_ok), emit.eq(0)],
             "default": [type_ok.eq(0), emit.eq(0)],
         })
         header_ok = magic_ok & (version == C.PROTO_VERSION) & (widx >= 3) & (length >= C.COMMON_BYTES) & \
@@ -160,7 +164,8 @@ class PacketParser(LiteXModule):
         self.comb += [
             msgs.sink.kind.eq(Mux(ptype == C.TYPE_FRAME_DATA, KIND_CHUNK,
                                   Mux(ptype == C.TYPE_FRAME_COMMIT, KIND_COMMIT,
-                                      Mux(ptype == C.TYPE_SCHEDULE, KIND_SCHEDULE, KIND_STATUS)))),
+                                      Mux(ptype == C.TYPE_SCHEDULE, KIND_SCHEDULE,
+                                          Mux(ptype == C.TYPE_ANNOUNCE_REQ, KIND_ANNOUNCE, KIND_STATUS))))),
             msgs.sink.frame_id.eq(f0),
             msgs.sink.index.eq(chunk_index[0:9]),
             msgs.sink.words.eq(words_total),

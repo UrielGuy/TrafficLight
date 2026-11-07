@@ -1,5 +1,5 @@
 """The receiver: frame slots, chunk bookkeeping, commits, schedule tables and the pass boundary
-(docs/FIRMWARE.md sections 6.5, 6.6, 7 and 8), plus the status reply builder.
+(docs/FIRMWARE.md sections 6.5, 6.6, 7 and 8). Replies are built by reply.Replies.
 
 Messages arrive from the packet parser in datagram order and are handled one at a time, so a
 commit is only acted on after its chunks have gone through the SDRAM writer. The boundary
@@ -10,10 +10,9 @@ from migen import *
 
 from litex.gen import *
 from litex.soc.interconnect import stream
-from liteeth.common import eth_udp_user_description
 
 from . import constants as C
-from .packet import KIND_CHUNK, KIND_COMMIT, KIND_SCHEDULE, msg_layout
+from .packet import KIND_ANNOUNCE, KIND_CHUNK, KIND_COMMIT, KIND_SCHEDULE, msg_layout
 
 # A table header as the card keeps it (section 6.5), in block-RAM-free registers.
 table_layout = [
@@ -39,10 +38,6 @@ COUNTERS = ("frames_shown", "frames_committed", "frames_incomplete", "frames_rej
             "sched_accepted", "sched_rejected")
 
 
-def Constant8(v):
-    return Constant(v, 8)
-
-
 def pack_entry(plane, oe, visit):
     return (plane & 0xF) | ((oe & 0xFFFF) << 4) | ((visit & 0xFFFF) << 20)
 
@@ -58,7 +53,7 @@ class Counters(Module):
 
 
 class Receiver(LiteXModule):
-    """Message sink -> SDRAM write jobs, table RAM, frame/schedule state and status replies."""
+    """Message sink -> SDRAM write jobs, table RAM, frame/schedule state and reply requests."""
 
     def __init__(self, tick_hz, pattern=False, pattern_table=C.PATTERN_TABLE):
         self.sink = sink = stream.Endpoint(msg_layout)
@@ -95,8 +90,10 @@ class Receiver(LiteXModule):
         self.bad_packet = Signal()          # from the parser: counted and the last error
         self.frame_ticks = Signal(32)
         self.uptime_ms = Signal(32)
-        # Reply requests (status request or schedule result).
+        self.ms_tick = Signal()             # one cycle per millisecond, when uptime_ms advances
+        # Reply requests: a STATUS (status request or schedule result) or an ANNOUNCE.
         self.reply_start = Signal()
+        self.reply_announce = Signal()
         self.reply_seq = Signal(32)
         self.reply_port = Signal(16)
         self.reply_ip = Signal(32)
@@ -119,7 +116,8 @@ class Receiver(LiteXModule):
 
         # Uptime.
         ms_div = Signal(max=tick_hz // 1000)
-        self.sync += If(ms_div == tick_hz // 1000 - 1, ms_div.eq(0), self.uptime_ms.eq(self.uptime_ms + 1)
+        self.comb += self.ms_tick.eq(ms_div == tick_hz // 1000 - 1)
+        self.sync += If(self.ms_tick, ms_div.eq(0), self.uptime_ms.eq(self.uptime_ms + 1)
                         ).Else(ms_div.eq(ms_div + 1))
 
         if pattern:
@@ -395,7 +393,8 @@ class Receiver(LiteXModule):
                 NextState("GET"),
             ),
         )
-        self.comb += [self.reply_seq.eq(m.seq), self.reply_port.eq(m.src_port), self.reply_ip.eq(m.src_ip)]
+        self.comb += [self.reply_seq.eq(m.seq), self.reply_port.eq(m.src_port), self.reply_ip.eq(m.src_ip),
+                      self.reply_announce.eq(m.kind == KIND_ANNOUNCE)]
         # The writer pops the FIFO during its job; the receiver pops when discarding or reading tables.
         self.comb += If(fsm.ongoing("WRITE"), self.fifo_re.eq(self.wr_pop))
 
@@ -425,58 +424,3 @@ class Receiver(LiteXModule):
         blank = ~self.have_frame | ~self.active_valid
         return Cat(self.have_frame, self.active_valid, self.pending_valid, self.frame_pending, blank)
 
-
-class StatusReply(LiteXModule):
-    """Streams one STATUS datagram (section 6.6) to the UDP port for each request."""
-
-    def __init__(self, rx: Receiver, tick_hz, fw_build, sdram_bytes=C.SDRAM_BYTES, min_visit_ticks=C.MIN_VISIT_TICKS):
-        self.source = source = stream.Endpoint(eth_udp_user_description(32))
-        self.start = Signal()
-        self.seq = Signal(32)
-        self.port = Signal(16)
-        self.ip = Signal(32)
-        self.busy = Signal()
-
-        # # #
-
-        cnt = rx.counters.value
-        flags = Signal(8)
-        self.comb += flags.eq(rx.flags())
-        body = [
-            Cat(Constant8(C.PROTO_VERSION), Constant8(C.FW_VERSION[0]), Constant8(C.FW_VERSION[1]), flags),
-            fw_build, tick_hz, rx.uptime_ms,
-            Cat(Constant(min_visit_ticks, 16), Constant(C.MAX_ENTRIES, 16)),
-            Cat(Constant(C.MAX_COLS, 16), Constant8(C.MAX_ROWS), Constant8(C.MAX_PLANES)),
-            Cat(Constant8(C.PORTS), Constant8(C.BUFFERS), rx.last_error, Constant8(0)),
-            sdram_bytes,
-            Mux(rx.active_valid, rx.active.id, 0), Mux(rx.pending_valid, rx.pending.id, 0),
-            rx.frame_id_shown, rx.frame_id_rx,
-            cnt["frames_shown"], cnt["frames_committed"], cnt["frames_incomplete"], cnt["frames_rejected"],
-            cnt["frames_replaced"], cnt["chunks_received"], cnt["chunks_dropped"], cnt["rx_dropped"],
-            cnt["underruns"], rx.frame_ticks, cnt["bad_packets"], cnt["sched_accepted"], cnt["sched_rejected"],
-        ]
-        assert len(body) * 4 == C.STATUS_BYTES
-        seq = Signal(32)
-        words = [Constant(C.MAGIC_WORD, 32),
-                 Constant(C.PROTO_VERSION | (C.TYPE_STATUS << 8) | (C.STATUS_BYTES << 16), 32),
-                 seq, Constant(0, 32)] + body
-        nwords = len(words)
-        i = Signal(max=nwords)
-        self.comb += [
-            source.data.eq(Array(words)[i]),
-            source.be.eq(0xF),
-            source.last.eq(i == nwords - 1),
-            source.src_port.eq(C.UDP_PORT),
-            source.length.eq(nwords * 4),
-        ]
-        self.sync += [
-            If(self.start & ~self.busy,
-                self.busy.eq(1), i.eq(0),
-                seq.eq(self.seq), source.dst_port.eq(self.port), source.ip_address.eq(self.ip),
-            ),
-            If(source.valid & source.ready,
-                i.eq(i + 1),
-                If(source.last, self.busy.eq(0)),
-            ),
-        ]
-        self.comb += source.valid.eq(self.busy)

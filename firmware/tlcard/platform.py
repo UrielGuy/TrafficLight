@@ -1,6 +1,6 @@
 """The 5A-75B V8.2 as the gateware sees it: litex-boards' platform (V8.0 pin tables, -7 speed
 grade) plus the HUB75 lines as one resource in lane order (docs/FIRMWARE.md section 5.1,
-docs/FPGA-BRINGUP.md section 3.1)."""
+docs/FPGA-BRINGUP.md section 3.1) and the configuration flash's data lines as found on V8.2."""
 from litex.build.generic_platform import IOStandard, Misc, Pins, Subsignal
 from litex_boards.platforms.colorlight_5a_75b import Platform as _Platform
 
@@ -23,7 +23,15 @@ def hub75_resource():
             IOStandard("LVCMOS33"), Misc("SLEWRATE=FAST"))
 
 
+# The W25Q32JV's CS#, SI and SO; its SCK is the dedicated MCLK pin, reached through USRMCLK.
+CONFIG_FLASH = ("config_flash", 0,
+                Subsignal("cs_n", Pins("N8")),
+                Subsignal("mosi", Pins("T8")),
+                Subsignal("miso", Pins("T7")),
+                IOStandard("LVCMOS33"))
+
+
 class Platform(_Platform):
     def __init__(self, revision="8.2"):
         super().__init__(revision=revision, toolchain="trellis")
-        self.add_extension([hub75_resource()])
+        self.add_extension([hub75_resource(), CONFIG_FLASH])

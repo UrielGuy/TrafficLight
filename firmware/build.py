@@ -7,18 +7,23 @@
   build.py mdio      PHY id scan, result on the LED
   build.py memtest   SDRAM test, result on the LED
 
-Run with the LiteX venv and the 2026-10-01 oss-cad-suite on PATH. Outputs land in
+Run with the LiteX venv; the oss-cad-suite in --toolchain goes first on PATH. Outputs land in
 <out>/<name>/gateware/<name>.bit and .svf (SRAM load: openFPGALoader -c dirtyJtag -m x.bit).
 """
 import argparse
 import datetime
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tlcard import constants as C                      # noqa: E402
+from tlcard.identity import ip_int, mac_for_ip         # noqa: E402
 from tlcard.platform import Platform                   # noqa: E402
+
+# The 2026-11-06 nightly crashes nextpnr on LiteX designs.
+TOOLCHAIN = Path.home() / "tools" / "oss-cad-suite-20261001"
 
 
 def build_id() -> int:
@@ -31,9 +36,12 @@ def main():
     ap.add_argument("target", choices=["main", "blink", "mdio", "memtest"])
     ap.add_argument("--out", default=str(Path.home() / "tools" / "tlcard-build"), help="build directory (outside the repo)")
     ap.add_argument("--name", default=None, help="build name (default: the target, plus -pattern)")
-    ap.add_argument("--eth-phy", type=int, default=0, choices=[0, 1], help="which RJ45 (PHY) carries the host")
-    ap.add_argument("--ip", default=C.CARD_IP, help="the card's IPv4 address")
-    ap.add_argument("--mac", default=f"{C.CARD_MAC:012x}", help="the card's MAC, 12 hex digits")
+    ap.add_argument("--eth-phy", type=int, default=1, choices=[0, 1],
+                    help="which RJ45 (PHY) carries the host; 1 on the sign's card (the gateware listens on one only)")
+    ap.add_argument("--ip", default="auto",
+                    help="'auto': 10.75.c.d from the flash's unique id at start; or a fixed IPv4 address")
+    ap.add_argument("--mac", default=None,
+                    help="with a fixed --ip: the MAC, 12 hex digits (default 02:5a:75:00:c:d from the IP's last two bytes)")
     ap.add_argument("--sys-clk-freq", type=float, default=C.DEFAULT_TICK_HZ, help="tick_hz: the system clock (also LiteDRAM's)")
     ap.add_argument("--sdram-cl", type=int, default=2, help="SDRAM CAS latency")
     ap.add_argument("--tx-delay", type=float, default=0.0,
@@ -43,14 +51,26 @@ def main():
     ap.add_argument("--seed", type=int, default=1, help="nextpnr seed")
     ap.add_argument("--timingstrict", action="store_true", help="fail the build on a timing violation")
     ap.add_argument("--no-run", action="store_true", help="only write the Verilog and scripts")
+    ap.add_argument("--toolchain", default=str(TOOLCHAIN), help="oss-cad-suite directory put first on PATH")
     args = ap.parse_args()
+
+    if args.ip == "auto":
+        if args.mac is not None:
+            ap.error("--mac needs a fixed --ip")
+        address = None
+    else:
+        ip = ip_int(args.ip)
+        address = (ip, mac_for_ip(ip) if args.mac is None else int(args.mac.replace(":", ""), 16))
+    toolchain_bin = Path(args.toolchain) / "bin"
+    if toolchain_bin.is_dir():
+        os.environ["PATH"] = str(toolchain_bin) + os.pathsep + os.environ.get("PATH", "")
 
     platform = Platform()
     name = args.name or (args.target + ("_pattern" if args.pattern and args.target == "main" else ""))    # a Verilog module name
     if args.target == "main":
         from tlcard.top import TLCard
-        top = TLCard(platform, sys_clk_freq=args.sys_clk_freq, eth_phy=args.eth_phy, ip=args.ip,
-                     mac=int(args.mac.replace(":", ""), 16), pattern=args.pattern, fw_build=build_id(),
+        top = TLCard(platform, sys_clk_freq=args.sys_clk_freq, eth_phy=args.eth_phy, address=address,
+                     pattern=args.pattern, fw_build=build_id(),
                      tx_delay=args.tx_delay, rx_delay=args.rx_delay, sdram_cl=args.sdram_cl)
     elif args.target == "blink":
         from tlcard.bringup import Blink

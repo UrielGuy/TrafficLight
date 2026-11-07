@@ -2,7 +2,8 @@
 
 The card side of `docs/FIRMWARE.md`: a LiteX/Migen design without a CPU that receives frame
 chunks, commits and schedule tables over UDP, keeps three frame slots in the SDRAM and streams
-bit planes to the eight HUB75 connectors on a host-built visit table. Behaviour is defined by
+bit planes to the eight HUB75 connectors on a host-built visit table. It takes its address
+from the configuration flash's unique id and announces itself every second. Behaviour is defined by
 the spec and the host-side reference model (`trafficlight/output/hub75/model.py`); the
 simulation tests here compare the gateware with that model, datagram for datagram and pulse
 for pulse.
@@ -12,22 +13,23 @@ for pulse.
 | File | Spec | What |
 | --- | --- | --- |
 | `tlcard/constants.py` | 3, 5, 6, 8 | The contract's numbers (checked against the host package by the tests). |
-| `tlcard/platform.py` | FPGA-BRINGUP 3.1 | V8.2 platform (litex-boards' V8.0 tables) plus the HUB75 lines as one resource in lane order 6c + s. |
-| `tlcard/packet.py` | 6.2–6.5 | Datagram parser on the 32-bit UDP user stream; 16 KiB receive FIFO with rollback (bad or oversize packets leave nothing); message FIFO in arrival order. |
-| `tlcard/receiver.py` | 6.5, 6.6, 7, 8 | Frame slots and roles, chunk bitmap/count/bytes, commits, schedule validation and table RAM (3 tables: active, pending, upload), the pass boundary, counters, `last_error`, status reply builder. |
+| `tlcard/platform.py` | FPGA-BRINGUP 3.1 | V8.2 platform (litex-boards' V8.0 tables) plus the HUB75 lines as one resource in lane order 6c + s, and the configuration flash's CS#/SI/SO (N8, T8, T7). |
+| `tlcard/identity.py` | 6.1 | Flash unique-id reader (SPI mode 0, 6.25 MHz, once after start) and the fold to IP/MAC registers (or the fixed build's constants), `uid_valid`. |
+| `tlcard/packet.py` | 6.2–6.5, 6.7 | Datagram parser on the 32-bit UDP user stream; 16 KiB receive FIFO with rollback (bad or oversize packets leave nothing); message FIFO in arrival order. |
+| `tlcard/receiver.py` | 6.5, 6.6, 7, 8 | Frame slots and roles, chunk bitmap/count/bytes, commits, schedule validation and table RAM (3 tables: active, pending, upload), the pass boundary, counters, `last_error`, uptime, reply requests. |
+| `tlcard/reply.py` | 6.6, 6.7 | The one UDP transmitter: STATUS and ANNOUNCE answers, the periodic ANNOUNCE broadcast and its timer. |
 | `tlcard/sdram.py` | 4.4, 5.1 | SDR init sequencer (no CPU, so no software init), LiteDRAM controller + crossbar, one native port with the record fetcher ahead of the chunk writer. |
 | `tlcard/streamer.py` | 1, 4.1, 5.1 | Record fetcher (SDRAM -> line buffer, 48-bit columns from 32-bit words, two visits ahead), visit sequencer (OE off / LAT / shift / OE on, underruns, `frame_ticks`), shifter (CLK, 48 data lines), built-in test pattern. |
-| `tlcard/core.py` | — | Parser + receiver + streamer behind one SDRAM access interface, with the HUB75 outputs registered once. |
-| `tlcard/top.py` | 2 | The FPGA top: PLL, RGMII PHY + LiteEth UDP/IP (ARP, ICMP, broadcast), GENSDRPHY, the core, the LED. |
+| `tlcard/core.py` | — | Identity + parser + receiver + replies + streamer behind one SDRAM access interface, with the HUB75 outputs registered once. |
+| `tlcard/top.py` | 2 | The FPGA top: PLL, RGMII PHY + LiteEth UDP/IP (ARP, ICMP, broadcast) on the core's address registers, GENSDRPHY, the flash pins and `USRMCLK`, the core, the LED. |
 | `tlcard/bringup.py` | FPGA-BRINGUP 6 | The LED-reporting bring-up designs: blink, MDIO PHY-id scan, SDRAM memtest. |
-| `build.py` | — | Builds any of them; options for PHY, IP/MAC, clock, RGMII delays, seed. |
+| `build.py` | — | Builds any of them; options for PHY, address, clock, RGMII delays, seed, toolchain. |
 | `tests/` | — | Migen simulations (below). |
 
 ## Building
 
 ```
-export PATH=~/tools/oss-cad-suite-20261001/bin:$PATH        # Yosys 0.69 / nextpnr-ecp5 0.11.1; the 2026-11-06 nightly crashes
-P=~/.venvs/litex/bin/python
+P=~/.venvs/litex/bin/python                # build.py puts ~/tools/oss-cad-suite-20261001/bin first on PATH (--toolchain)
 $P firmware/build.py main                 # the card gateware   -> ~/tools/tlcard-build/main/gateware/main.bit, .svf
 $P firmware/build.py main --pattern       # same, lighting the built-in picture until a schedule arrives -> main_pattern/ (HUB75 pin test)
 $P firmware/build.py blink                # Test B: LED 1 Hz from the 25 MHz clock
@@ -35,13 +37,31 @@ $P firmware/build.py mdio                 # Test D: PHY id scan on the LED
 $P firmware/build.py memtest              # Test E: 8 MiB SDRAM test on the LED
 ```
 
-Options: `--eth-phy 0|1` (which RJ45; the tested card uses 1), `--ip`, `--mac`, `--sys-clk-freq` (= `tick_hz`, default 50e6),
-`--sdram-cl`, `--tx-delay`/`--rx-delay` (RGMII delays in the FPGA; 0 and 2 ns by default, the values that work on V8.2),
-`--seed`, `--timingstrict`, `--out` (default `~/tools/tlcard-build`, keep bitstreams out of git),
-`--no-run` (write Verilog and scripts only). Load with SRAM only until it works:
-`openFPGALoader -c dirtyJtag -m <file>.bit` (docs/FPGA-BRINGUP.md section 5).
+The toolchain is Yosys 0.69 / nextpnr-ecp5 0.11.1 from the 2026-10-01 oss-cad-suite; the 2026-11-06
+nightly crashes nextpnr on this design.
 
-LED codes: **main** off until the SDRAM init is through, 1 Hz blink until a frame is shown,
+Options: `--eth-phy 0|1` (which RJ45; default 1, the socket the sign's cable uses), `--ip auto|a.b.c.d` and `--mac` (below), `--sys-clk-freq` (= `tick_hz`, default 50e6),
+`--sdram-cl`, `--tx-delay`/`--rx-delay` (RGMII delays in the FPGA; 0 and 2 ns by default, the values that work on V8.2),
+`--seed`, `--timingstrict`, `--toolchain` (oss-cad-suite directory), `--out` (default `~/tools/tlcard-build`, keep bitstreams out of git),
+`--no-run` (write Verilog and scripts only). Load with SRAM only until it works:
+`openFPGALoader -c dirtyJtag --freq 1000000 -m <file>.bit` (docs/FPGA-BRINGUP.md section 5). The Pico's
+default 6 MHz JTAG clock corrupted loads on 2026-11-07 ("EXEC Error", or a garbled idcode); 1 MHz
+was reliable. Write the flash the same way: `openFPGALoader -c dirtyJtag --freq 1000000 -f --verify <file>.bit`.
+
+### The card's address
+
+`--ip auto` (the default): about 10 µs after start the gateware reads the flash's 64-bit unique
+id (W25Q32JV command 0x4B, SCK through `USRMCLK`, ~17 µs) and folds it (docs/FIRMWARE.md 6.1):
+fold = the XOR of the id's four 16-bit halves, c = fold >> 8 and d = fold & 0xFF with 0 -> 1
+and 255 -> 254, IP **10.75.c.d**, MAC **02:5a:75:00:c:d**. The registers are set once and feed
+LiteEth (ARP, IP, the MAC filter); nothing is sent before. `--ip a.b.c.d` builds the address
+in, with MAC 02:5a:75:00:c:d unless `--mac` (12 hex digits) is given; the id is still read and
+reported, and the ANNOUNCE says `fixed_address`. Either way the card announces itself
+(6.7): an ANNOUNCE to 10.75.255.255:5776 from port 5775 at 0.5 s + (fold & 0xFF) ms after
+start and every second after (seq 0, 1, 2, ...), and to the source of every ANNOUNCE_REQ.
+Find the card with `tcpdump -n udp port 5776` or the host driver.
+
+LED codes (unchanged): **main** off until the SDRAM init is through, 1 Hz blink until a frame is shown,
 then steady. **mdio**: per PHY address with a Realtek id (0x001C in register 2; the V8.2 card's read 0x001CC858), (address + 1) blinks at 2 Hz,
 1.5 s pause; 3 s between rounds; a 5 Hz blink means no PHY answered. **memtest**: steady while
 running, 0.5 Hz = pass, 5 Hz = fail.
@@ -76,7 +96,9 @@ collects `tests/`. The tests use Migen's simulator; `TLCARD_VCD=x.vcd` writes a 
 
 | Test | What it checks |
 | --- | --- |
-| `test_packet.py` | Constants equal the host package's. The parser on `protocol.py` datagrams: status/commit/chunk/schedule messages with their fields and payload words in order; short, bad-magic, bad-version, unknown-type, length-mismatch, malformed-body packets are counted and leave nothing in the FIFO; a STATUS echo is ignored; a MAC error drops the packet; a full FIFO drops whole packets and later ones get through. |
+| `test_identity.py` | The id reader against a behavioural W25Q32JV (command 0x4B, 4 dummy bytes, 104 clocks, mode 0: SCK low at CS# edges, SI stable at rising edges, SCK <= 12.5 MHz, read 2–50 µs after start, nothing after), at 50 and 25 MHz. The fold, the 0 -> 1 and 255 -> 254 clamps, `uid_valid` for all-0/all-1 ids (also against the host's `address_from_uid`), addresses never changing after the first load, the fixed build. |
+| `test_announce.py` | The whole core with the flash model: periodic broadcasts (first at 500 + fold & 0xFF ms, then every 1000 ms, seq 0, 1, 2, to 10.75.255.255:5776 from 5775), answers to ANNOUNCE_REQ (unicast to the source IP/port, its seq), every byte of the body, the fixed-address and pattern flags, a flash that does not answer (10.75.1.1, uid not valid), STATUS replies in between, an ANNOUNCE sent to the card ignored and a short one bad, twelve requests around a broadcast all answered in order with the broadcast out after at most one reply. |
+| `test_packet.py` | Constants equal the host package's (ANNOUNCE numbers included). The parser on `protocol.py` datagrams: status/announce/commit/chunk/schedule messages with their fields and payload words in order; short, bad-magic, bad-version, unknown-type, length-mismatch, malformed-body packets (an ANNOUNCE_REQ with a body, a short ANNOUNCE) are counted and leave nothing in the FIFO; a STATUS or ANNOUNCE echo is ignored; a MAC error drops the packet; a full FIFO drops whole packets and later ones get through. |
 | `test_receiver.py` | The card against `model.Card`: identical datagrams, every status field the model defines compared after each request. In-order frames, out-of-order and duplicated chunks, commit before chunks, a lost chunk abandoned by a newer frame, stale packets, frame id wrap at 2^32, wrong commit totals, out-of-range chunk, frame for another schedule, schedule switch dropping the pending frame and taking effect at the boundary, re-uploading the running table, rejected tables (tick rate, limits, bad entry, lat 0), bad packets. |
 | `test_streamer.py` | The light: a small table (4 entries, 2 rows, 4 columns, 2 planes) and random frames go in as packets; the HUB75 pins are traced and every OE pulse of a pass (start tick, length, row address, the 48 x cols latched bits) must equal `model.Streamer`'s; a second frame appears only at a pass boundary and whole; status flags/ids/`frame_ticks`. The pattern build's picture. A slow SDRAM counts underruns and never changes a pulse length. |
 | `test_sdram.py` | On LiteDRAM's SDRAM model: init, write/read-back of records across page boundaries, and a 192-word fetch completing within `min_visit_ticks` while the writer streams 360-word chunks. |
@@ -88,7 +110,8 @@ authors) and the RGMII timing; see the bring-up notes.
 
 | Bitstream | LUT4 | FF | DP16KD | MULT18 | sys (50 MHz) | eth_rx/tx (125 MHz) |
 | --- | --- | --- | --- | --- | --- | --- |
-| main | 13305 / 24288 (54 %) | 6040 (24 %) | 12 / 56 | 5 / 28 | 70.5 MHz | 159 MHz |
+| main (2026-11-07, `--eth-phy 1`, flash id + ANNOUNCE) | 13275 / 24288 (54 %) | 6205 (25 %) | 12 / 56 | 5 / 28 | 72.2 MHz | 151 MHz |
+| main (before them) | 13305 / 24288 (54 %) | 6040 (24 %) | 12 / 56 | 5 / 28 | 70.5 MHz | 159 MHz |
 | main_pattern | 13134 (54 %) | 6013 (24 %) | 12 | 5 | 69.4 MHz | 143 MHz |
 | memtest | 1382 (5 %) | | | | 109 MHz | |
 | mdio | 466 (1 %) | | | | 156 MHz (clk25) | |
@@ -113,6 +136,11 @@ chain through LiteEth's 8-bit TX converter and the CDC FIFO); moving the MAC dat
 * **Boundary.** The fetcher requests it before fetching (entry 0, row 0); the receiver serves
   it in any cycle where no message is changing the same state. With no table active the
   fetcher requests it continuously, so an accepted table takes effect at once.
+* **One transmitter.** STATUS answers, ANNOUNCE answers and the broadcast share the UDP port's
+  TX, one datagram at a time. A request that arrives while a datagram is going out is
+  **queued**, not dropped: the receiver waits with it, and the message FIFO (16 entries) holds
+  the ones behind it; only a full message FIFO drops (counted in `rx_dropped`). A broadcast that
+  falls due goes before the next queued answer, so a stream of requests cannot hold it back.
 * **Tables.** Three table RAMs (36-bit entries: plane, OE, visit) rotate between active,
   pending and upload, so a rejected upload never damages the pending table. Header fields
   are registers.
@@ -134,5 +162,8 @@ chain through LiteEth's 8-bit TX converter and the CDC FIFO); moving the MAC dat
 * The UDP user stream's byte order is assumed little-endian per 32-bit word (LiteEth's 8->32
   stride converter puts the first byte in bits 7:0). If the first `ping` works but every
   packet is a bad packet, that is the first thing to check (`bad_packets` in the status).
+* The flash id read (pins N8/T8/T7, MCLK through `USRMCLK`) is simulated, not yet seen on the
+  card. If the flash does not answer, the id reads all 1 (or 0) and the card comes up as
+  10.75.1.1 with `uid_valid` clear in its ANNOUNCE: the first thing to look at.
 * No ARP timeout handling beyond LiteEth's: a reply to a host whose MAC is not cached waits
   for the ARP exchange (LiteEth does it in hardware).
