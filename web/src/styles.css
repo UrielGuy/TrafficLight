@@ -232,3 +232,9 @@ input[type=url] { font: inherit; color: var(--text); background: var(--surface2)
 .bundle-bar { margin: 4px 0 12px; }
 .section-head .bundle-bar { margin: 0; }
 .bundle-result { display: grid; gap: 8px; }
+
+/* Dashboard: sign on / off */
+.power-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface2); }
+.power-row.off { border-color: var(--bad); }
+.power-title { font-weight: 600; }
+.power-row.off .power-title { color: var(--bad); }

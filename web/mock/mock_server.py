@@ -32,7 +32,7 @@ settings = {
                "panel_order": [0, 1, 2, 3, 4, 5], "panel_flip": [False, False, True, False, False, False], "color_order": "rgb"},
     "audio": {"device": None, "volume": 0.8},
     "schedule": {"default_set": sets[0]["id"], "random_minutes": 6, "random_enabled": True},
-    "face_colors": ["#ff0000", "#ffb000", "#00ff40"], "off_style": "ring", "fps": 60,
+    "face_colors": ["#ff0000", "#ffb000", "#00ff40"], "off_style": "ring", "fps": 60, "sign_on": True,
 }
 media = [
     {"id": "m1", "name": "fire.mp4", "kind": "video", "status": "ready", "error": None, "duration": 12.5, "width": 640, "height": 360, "fps": 30, "has_audio": True, "size": 4_200_000, "added": 0},

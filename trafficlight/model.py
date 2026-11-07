@@ -135,6 +135,8 @@ class Settings(BaseModel):
     face_colors: list[str] = Field(default_factory=lambda: ["#ff0000", "#ffb000", "#00ff40"])  # top, middle, bottom
     off_style: Literal["ring", "dark"] = "ring"   # a light with nothing on it: dim outline ring or black
     fps: int = 60                      # render rate of the engine
+    sign_on: bool = True               # False: the sign dark and silent until turned back on. The show runs on
+                                       # unseen (the schedule keeps time); test patterns still show
 
 
 # ---------------------------------------------------------------- media

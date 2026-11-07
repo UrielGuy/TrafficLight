@@ -69,6 +69,7 @@ export default function Dashboard() {
   const [minutes, setMinutes] = useDebouncedValue(settings?.schedule.random_minutes ?? 6, (v) => void patchSettings({ schedule: { random_minutes: v } }), 600);
 
   const now = state?.now;
+  const signOn = settings?.sign_on ?? true;
 
   return (
     <div className="page">
@@ -78,10 +79,19 @@ export default function Dashboard() {
       <div className="dash-top">
         <div className="preview-col">
           <SignPreview feed={signFeed} className="dash-preview" />
-          {state && <div className="muted small center">{state.output.driver === 'none' ? 'No output driver' : `${state.output.fps.toFixed(0)} fps`}</div>}
+          {state && <div className="muted small center">{!signOn ? 'Sign off: nothing is shown' : state.output.driver === 'none' ? 'No output driver' : `${state.output.fps.toFixed(0)} fps`}</div>}
         </div>
 
         <div className="card now">
+          <div className={`power-row ${signOn ? '' : 'off'}`}>
+            <div>
+              <div className="power-title">{signOn ? 'Sign on' : 'Sign off'}</div>
+              <div className="small muted">{signOn ? 'Showing the schedule' : 'Dark and silent until turned back on'}</div>
+            </div>
+            <button className={signOn ? 'danger' : 'primary'} onClick={() => void patchSettings({ sign_on: !signOn })}>
+              {signOn ? 'Turn off' : 'Turn on'}
+            </button>
+          </div>
           <div className="small muted">{now ? SOURCE[now.source] : 'Waiting for the controller…'}{now?.paused ? ' · paused' : ''}</div>
           <div className="now-name">{now?.set_name ?? (now?.source === 'test' ? 'Test pattern' : '—')}</div>
           <NowProgress now={now} />

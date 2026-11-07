@@ -238,6 +238,14 @@ One render thread, `Settings.fps` times a second:
 
 Pause stops the clock of the sign player (picture stands still, sound stops).
 
+`Settings.sign_on = false` (the dashboard's Turn off) makes the sign dark and
+silent until it is turned back on: the output driver keeps getting frames, all
+black, the audio no cues, and the preview shows the black sign. The show runs
+on unseen (schedule, sets, editor live mode keep their clocks), so turning it
+on picks up where the show is by then. Test patterns still show: they are
+deliberate setup pictures. The setting survives a restart; bundles do not
+carry it.
+
 ## HTTP API
 
 JSON everywhere. Errors: HTTP 4xx with `{"detail": "message"}`.

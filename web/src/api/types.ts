@@ -78,6 +78,8 @@ export interface Settings {
   face_colors: string[];
   off_style: 'ring' | 'dark';
   fps: number;
+  /** false: the sign dark and silent until turned back on (the show runs on unseen; test patterns still show). */
+  sign_on: boolean;
 }
 export type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? (T[K] extends unknown[] ? T[K] : DeepPartial<T[K]>) : T[K] };
 export type SettingsPatch = DeepPartial<Settings>;

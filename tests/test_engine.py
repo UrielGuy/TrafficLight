@@ -423,3 +423,24 @@ def test_next_set_warmed_up_before_switch(tmp_path):
     r.run(0.6)
     assert r.now_state["set_name"] == "B"
     assert LOG.count(("init", "B0")) == 1 and LOG.count(("init", "A0")) == 1   # A did not pre-roll itself
+
+
+def test_sign_off_is_dark_and_silent_until_on(tmp_path):
+    r = Rig(tmp_path, off_style="dark")
+    snd = Clip(type="test:sound", start=0, duration=10, params={"media": "x"})
+    r.add("A", ("face0", [solid("#ff0000", 0, 10)]), ("audio", [snd]), duration=10)
+    r.step()
+    assert px(r.frame, 0) == (255, 0, 0) and r.audio.cues
+    r.store.update_settings({"sign_on": False})
+    r.run(1.0)
+    d = r.drivers[-1]
+    assert r.frame.max() == 0 and r.audio.cues == []
+    assert d.frames > 1 and len(r.drivers) == 1           # the card keeps getting (black) frames, no reopen
+    assert r.now_state["source"] == "schedule" and r.now_state["t"] > 0.9          # the show runs on unseen
+    r.engine.test_pattern("blue")                                                   # setup pictures still show
+    r.step()
+    assert (r.frame == (0, 0, 255)).all()
+    r.engine.test_pattern("off")
+    r.store.update_settings({"sign_on": True})
+    r.step()
+    assert px(r.frame, 0) == (255, 0, 0) and r.audio.cues

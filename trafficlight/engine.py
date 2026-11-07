@@ -166,6 +166,15 @@ def card_preview(settings: Settings) -> np.ndarray:
         return np.zeros((config.H, config.W, 3), np.uint8)
 
 
+def _dark_frame() -> np.ndarray:
+    a = np.zeros((config.H, config.W, 3), np.uint8)
+    a.flags.writeable = False         # shared by every dark frame: nobody may draw on it
+    return a
+
+
+_DARK = _dark_frame()
+
+
 def _frame_rate(settings: Settings) -> int:
     return max(1, min(240, int(settings.fps or 60)))
 
@@ -522,6 +531,8 @@ class Engine:
             ed.frame.put(ed_frame)
             if ed_live and test is None:
                 frame, cues, playing = ed_frame, ed_cues, ed_playing
+        if not settings.sign_on and test is None:
+            frame, cues = _DARK, []
         if test is not None:
             # The wizard changes the mapping while the wiring picture is up: the preview follows it.
             frame, cues = (test if test_card is None else card_preview(settings)), []
