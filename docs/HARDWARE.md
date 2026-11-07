@@ -181,7 +181,51 @@ each one that fails, and the Dashboard shows the ones that need attention.
     the copy. `cap_net_admin` is optional: it only lets the driver enlarge
     the socket send buffer.
 * NetworkManager will try DHCP on `eth0` and fall back to a link-local
-  address. That is harmless. [confirm: no link flapping on the Pi]
+  address. That is harmless (stock firmware; the custom firmware needs the
+  static address below). [confirm: no link flapping on the Pi]
+
+### Custom firmware: the computer's network port
+
+With the custom firmware (`docs/FIRMWARE.md`, driver **Custom firmware**) the
+card speaks plain UDP: no Npcap, no raw sockets, no `CAP_NET_RAW`. The
+computer's port for the card needs a fixed address:
+**10.75.0.1, netmask 255.255.0.0** (a /16), no gateway, no DNS. Each card
+gives itself an address 10.75.c.d (c, d from 1 to 254) from its flash's
+unique id and announces itself every second to 10.75.255.255. With the
+netmask 255.255.255.0 both the announcements and the card's address are
+outside the port's network and the card is not found.
+
+* **Windows**, in a command prompt run as administrator (the adapter's name
+  is in `netsh interface show interface`, e.g. "Ethernet 2"):
+
+  ```
+  netsh interface ip set address "Ethernet 2" static 10.75.0.1 255.255.0.0
+  ```
+
+  No firewall rule is needed: besides listening for the announcements, the
+  server asks who is there from the port it listens on (UDP 5776), and
+  Windows lets the answers to its own request in even where it drops
+  unsolicited broadcasts.
+* **Raspberry Pi OS** (Bookworm and later use NetworkManager): a profile for
+  `eth0` that outranks the automatic "Wired connection 1":
+
+  ```
+  sudo nmcli connection add type ethernet ifname eth0 con-name sign \
+      ipv4.method manual ipv4.addresses 10.75.0.1/16 ipv6.method disabled \
+      connection.autoconnect yes connection.autoconnect-priority 10
+  sudo nmcli connection up sign
+  ```
+
+  `ip -4 addr show eth0` then shows `inet 10.75.0.1/16`. Wi-Fi keeps the
+  default route.
+* In **Settings → LED output**, **Card address** stays **Automatic**: the
+  server takes the first card that announces itself, shows its address and
+  MAC under the field and in the setup list ("Found card 10.75.c.d"), follows
+  it if its address changes, and warns about any other card it hears. Once
+  the card is known, `ping 10.75.c.d` answers. **Fixed address** pins one
+  card (a build with `--ip`, or one card among several).
+* One server per computer: a second one cannot listen on UDP 5776, and two
+  senders would fight over the card. The setup list says so.
 
 ## 6. Bring-up with the test pattern tool
 

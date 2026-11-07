@@ -28,7 +28,7 @@ def sset(name, bpm=120, dur=30, rot=True):
 
 sets = [sset("Morning"), sset("Disco", 128, 60), sset("Quiet hours", 90, 120, False)]
 settings = {
-    "output": {"driver": "colorlight", "interface": "eth0", "card_address": "10.75.0.2", "card_port": 5775, "brightness": 0.5, "gamma": 1.0, "rotate180": False,
+    "output": {"driver": "colorlight", "interface": "eth0", "card_address": "", "card_port": 5775, "brightness": 0.5, "gamma": 1.0, "rotate180": False,
                "panel_order": [0, 1, 2, 3, 4, 5], "panel_flip": [False, False, True, False, False, False], "color_order": "rgb"},
     "audio": {"device": None, "volume": 0.8},
     "schedule": {"default_set": sets[0]["id"], "random_minutes": 6, "random_enabled": True},
@@ -58,13 +58,27 @@ def frame(t: float, set_idx: int = 0) -> bytes:
     return buf.getvalue()
 
 
+def output_state():
+    o = settings["output"]
+    if o["driver"] != "fpga":
+        return {"driver": o["driver"], "ok": False, "error": "Npcap not installed (mock)", "interface": "eth0", "fps": 59.9}
+    # The custom firmware: one card found (at the pinned address if one is set), a second one heard.
+    ip = o["card_address"] or "10.75.38.201"
+    card = {"ip": ip, "port": 5775, "mac": "02:5a:75:00:26:c9", "uid": "e6614c311b5a2f30", "uid_valid": True,
+            "fixed_address": False, "fw": "0.1"}
+    other = {"ip": "10.75.112.7", "port": 5775, "mac": "02:5a:75:00:70:07", "uid": "e6614c311b5a7e41", "uid_valid": True,
+             "fixed_address": False, "fw": "0.1"}
+    return {"driver": "fpga", "ok": True, "error": None, "interface": None, "fps": 59.9, "address": f"{ip}:5775",
+            "answering": True, "found": {**card, "auto": not o["card_address"]}, "others": [other]}
+
+
 def state():
     s = sets[playing["set"] % len(sets)] if sets else None
     t = (time.time() - playing["t0"]) % (s["duration"] if s else 1)
     return {"now": {"source": "schedule" if s else "idle", "set_id": s and s["id"], "set_name": s and s["name"], "t": t,
                     "duration": s["duration"] if s else 0, "paused": playing["paused"]},
             "schedule": {**settings["schedule"], "random_in": max(0, 360 - (time.time() - T0) % 360)},
-            "output": {"driver": "colorlight", "ok": False, "error": "Npcap not installed (mock)", "interface": "eth0", "fps": 59.9},
+            "output": output_state(),
             "audio": {"ok": not audio_error["on"], "error": "No audio device (mock)" if audio_error["on"] else None, "device": None, "device_name": "Speakers",
                       "volume": settings["audio"]["volume"], "voices": 0},
             "sets_rev": rev["sets"], "media_rev": rev["media"], "version": "0.1.0-mock"}

@@ -1,4 +1,7 @@
-"""The custom-firmware driver against a fake card (the behavioural model behind a localhost UDP socket)."""
+"""The custom-firmware driver against a fake card (the behavioural model behind a localhost UDP socket).
+
+Nothing here binds the real ports (5775, 5776) or sends beyond 127.0.0.1: every driver listens on a free
+port (announce_port=0) and fake cards announce themselves to it."""
 import socket
 import time
 
@@ -12,6 +15,7 @@ from trafficlight.output import fpga
 from trafficlight.output.base import OutputError, create_driver
 from trafficlight.output.fpga import FpgaDriver, FpgaOptions
 from trafficlight.output.hub75 import protocol as P
+from trafficlight.output.hub75.model import DEFAULT_UID
 from trafficlight.output.hub75.pack import Packer
 from trafficlight.output.mapping import Mapper
 
@@ -23,6 +27,13 @@ def quick_polling(monkeypatch):
     monkeypatch.setattr(fpga, "LOST_AFTER", 0.15)
     monkeypatch.setattr(fpga, "RESEND_EVERY", 0.2)
     monkeypatch.setattr(fpga, "HEALTH_WINDOW", 5.0)
+    monkeypatch.setattr(fpga, "ASK_EVERY", 0.1)
+    monkeypatch.setattr(fpga, "ASK_EVERY_FOUND", 0.5)
+
+
+def opts(**kw) -> FpgaOptions:
+    kw = {"dither": False, "broadcast": "", "announce_port": 0, **kw}
+    return FpgaOptions(**kw)
 
 
 @pytest.fixture
@@ -39,7 +50,7 @@ def make(card):
     def make(fps=60, brightness=1.0, gamma=2.2, address="127.0.0.1", port=None, options=None, factory=None, **kw):
         s = OutputSettings(driver="fpga", card_address=address, card_port=port or card.port,
                            brightness=brightness, gamma=gamma, **kw)
-        d = FpgaDriver(s, options or FpgaOptions(dither=False, broadcast=""), factory)
+        d = FpgaDriver(s, options or opts(), factory)
         d.set_frame_rate(fps)
         d.open()
         d.set_brightness(brightness)
@@ -91,26 +102,153 @@ def test_a_card_with_other_limits_gets_a_schedule_for_them(make):
         c.close()
 
 
-def test_card_found_by_broadcast_when_its_address_is_wrong(card, make):
-    d = make(address="127.0.0.2", options=FpgaOptions(dither=False, broadcast="127.0.0.1"))
-    wait_for(lambda: card.active is not None, what="schedule via broadcast")
-    p = wait_for(lambda: [x for x in d.status()["problems"] if x["id"] == "output.receiver"], what="warning")
-    assert p[0]["level"] == "warning" and "127.0.0.1" in p[0]["fix"] and d.status()["ok"]
+def receiver_problem(d):
+    return next((x for x in d.status()["problems"] if x["id"] == "output.receiver"), None)
 
 
-def test_no_answer_is_a_problem_with_a_fix(make):
+@pytest.fixture
+def mute():
+    """A UDP port on localhost where nothing answers."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(("127.0.0.1", 0))
-    try:
-        d = make(port=s.getsockname()[1])
-        p = wait_for(lambda: next((x for x in d.status()["problems"] if x["id"] == "output.receiver"), None),
-                     what="no-answer problem")
-    finally:
-        s.close()
-    assert p["level"] == "error" and "does not answer" in p["title"]
-    assert "10.75.0.1" in p["fix"] and "ping 10.75.0.2" in p["fix"]
+    yield s.getsockname()[1]
+    s.close()
+
+
+def test_a_pinned_card_is_driven_and_asked_who_it_is(card, make):
+    d = make()
+    ready(card, d)
+    f = wait_for(lambda: d.status()["found"], what="the card's announcement")
+    ip, port = d.status()["address"].split(":")
+    assert (f["ip"], f["port"], f["auto"]) == ("127.0.0.1", card.port, False) and (ip, int(port)) == ("127.0.0.1", card.port)
+    assert f["uid"] == DEFAULT_UID.hex() and f["mac"] == P.mac_for_ip("127.0.0.1") and f["fw"] == "0.1"
+    assert f["uid_valid"] and f["fixed_address"] and d.status()["others"] == []
+    assert card.requests(P.AnnounceRequest) >= 1          # asked straight, not by broadcast
+
+
+def test_an_automatic_driver_takes_the_card_that_announces_itself(card, make):
+    d = make(address="")
+    assert d.status()["address"] is None and d.status()["found"] is None
+    card.announce_to = ("127.0.0.1", d.listen_port)
+    ready(card, d)
     st = d.status()
-    assert not st["ok"] and st["answering"] is False and st["error"].startswith("No answer from 127.0.0.1")
+    assert st["found"]["auto"] and st["found"]["uid"] == DEFAULT_UID.hex() and st["address"] == f"127.0.0.1:{card.port}"
+    assert card.requests(P.AnnounceRequest) == 0           # nowhere to ask (broadcast ""): the announcement did it
+    f = picture()
+    d.send(f)
+    wait_for(lambda: card.shown_frame == expected(f, card.active), what="frame on the discovered card")
+    assert st["problems"] == []
+
+
+def test_an_automatic_driver_finds_the_card_by_asking(card, make):
+    """A firewall that drops the periodic broadcasts still lets the answers to the driver's own request in."""
+    d = make(address="", options=opts(broadcast="127.0.0.1"))
+    ready(card, d)
+    assert card.requests(P.AnnounceRequest) >= 1 and d.status()["found"]["ip"] == "127.0.0.1"
+    assert card.counter("bad_packets") == 0
+
+
+def test_nothing_found_is_an_error_with_the_network_fix(make, mute):
+    d = make(address="", port=mute, options=opts(broadcast="127.0.0.1"))
+    p = wait_for(lambda: receiver_problem(d), what="nothing-found problem")
+    assert p["level"] == "error" and p["title"] == "No LED card found" and "127.0.0.1" in p["detail"]
+    assert "10.75.0.1" in p["fix"] and "255.255.0.0" in p["fix"] and "255.255.255.0" in p["fix"]
+    st = d.status()
+    assert not st["ok"] and st["answering"] is False and st["address"] is None and st["found"] is None
+
+
+def test_no_answer_from_a_pinned_address_is_a_problem_with_a_fix(make, mute):
+    d = make(port=mute)
+    p = wait_for(lambda: receiver_problem(d), what="no-answer problem")
+    assert p["level"] == "error" and "does not answer" in p["title"]
+    assert "10.75.0.1" in p["fix"] and "255.255.0.0" in p["fix"]
+    st = d.status()
+    assert not st["ok"] and st["answering"] is False and st["error"].startswith(f"No answer from 127.0.0.1:{mute}")
+
+
+def test_a_pinned_address_is_kept_and_an_announcing_card_named(card, make, mute):
+    d = make(port=mute)
+    card.announce_to = ("127.0.0.1", d.listen_port)
+    p = wait_for(lambda: (x := receiver_problem(d)) and f"127.0.0.1:{card.port}" not in x["detail"]
+                 and "announces" in x["detail"] and x, what="problem naming the card")
+    assert p["level"] == "error" and "Clear the card address" in p["fix"]
+    assert card.active is None and card.requests(P.StatusRequest) == 0
+    assert [o["port"] for o in d.status()["others"]] == [card.port]
+
+
+def test_a_second_card_is_reported_and_not_taken(card, make):
+    d = make(address="")
+    card.announce_to = ("127.0.0.1", d.listen_port)
+    ready(card, d)
+    other = FakeCard(uid=bytes.fromhex("0102030405060708"), announce_to=("127.0.0.1", d.listen_port))
+    try:
+        p = wait_for(lambda: next((x for x in d.status()["problems"] if x["id"] == "output.cards"), None),
+                     what="several-cards warning")
+        assert p["level"] == "warning" and f"127.0.0.1 (MAC {P.mac_for_ip('127.0.0.1')})" in p["detail"]
+        st = d.status()
+        assert st["ok"] and st["found"]["port"] == card.port
+        assert [o["uid"] for o in st["others"]] == ["0102030405060708"]
+        time.sleep(0.3)
+        assert other.active is None and other.requests(P.StatusRequest) == 0
+    finally:
+        other.close()
+
+
+def test_a_card_gone_quiet_is_replaced_by_the_next_that_announces(card, make):
+    d = make(address="")
+    card.announce_to = ("127.0.0.1", d.listen_port)
+    ready(card, d)
+    f = picture()
+    d.send(f)
+    wait_for(lambda: card.shown_frame == expected(f, card.active))
+    other = FakeCard(uid=bytes.fromhex("0102030405060708"), announce_to=("127.0.0.1", d.listen_port))
+    try:
+        wait_for(lambda: d.status()["others"], what="the second card heard")
+        assert other.active is None
+        card.close()
+        wait_for(lambda: other.active is not None, what="schedule on the second card")
+        wait_for(lambda: other.shown_frame == expected(f, other.active), what="the picture on the second card")
+        st = wait_for(lambda: d.status() if d.status()["answering"] else None)
+        assert st["found"]["uid"] == "0102030405060708" and st["address"] == f"127.0.0.1:{other.port}"
+        assert st["others"] == [] or st["others"][0]["uid"] == DEFAULT_UID.hex()
+    finally:
+        other.close()
+
+
+def test_the_card_is_followed_to_a_new_address(card, make):
+    d = make(address="")
+    card.announce_to = ("127.0.0.1", d.listen_port)
+    ready(card, d)
+    f = picture()
+    d.send(f)
+    wait_for(lambda: card.shown_frame == expected(f, card.active))
+    card.close()
+    moved = FakeCard(uid=DEFAULT_UID, announce_to=("127.0.0.1", d.listen_port))    # the same card, reflashed
+    try:
+        wait_for(lambda: moved.shown_frame is not None and moved.shown_frame == expected(f, moved.active),
+                 what="the picture at the new address")
+        st = d.status()
+        assert st["address"] == f"127.0.0.1:{moved.port}" and st["found"]["uid"] == DEFAULT_UID.hex()
+        assert st["others"] == []
+    finally:
+        moved.close()
+
+
+def test_a_taken_announce_port_is_a_warning_not_a_failure(card, make):
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    blocker.bind(("", 0))
+    try:
+        port = blocker.getsockname()[1]
+        d = make(options=opts(announce_port=port))
+        ready(card, d)
+        assert d.listen_port != port
+        p = next(x for x in d.status()["problems"] if x["id"] == "output.access")
+        assert p["level"] == "warning" and str(port) in p["detail"] and "another" in p["detail"]
+        assert d.status()["ok"]
+        d2 = make(address="", options=opts(announce_port=port, broadcast="127.0.0.1"))
+        wait_for(lambda: d2.status()["found"], what="found by asking without the announce port")
+    finally:
+        blocker.close()
 
 
 def test_unresolvable_address_fails_to_open(card):
@@ -179,7 +317,7 @@ def test_identical_frames_are_not_sent_again(card, make):
 
 
 def test_dithering_keeps_a_still_picture_changing(card, make):
-    d = make(options=FpgaOptions(dither=True, broadcast=""), brightness=1.0, gamma=1.0)
+    d = make(options=opts(dither=True), brightness=1.0, gamma=1.0)
     ready(card, d)
     f = np.full((config.H, config.W, 3), 100, np.uint8)
     # 100/255 of 4095 = 1605.88: the carried fraction makes the packed bytes alternate between 1605 and 1606;
@@ -320,7 +458,7 @@ def test_a_rate_the_depth_does_not_fit_gives_fewer_planes_and_says_so(card, make
 
 
 def test_a_schedule_that_cannot_fit_is_an_error(card, make):
-    d = make(fps=1000, options=FpgaOptions(planes=12, dither=False, broadcast=""))
+    d = make(fps=1000, options=opts(planes=12))
     p = wait_for(lambda: next((x for x in d.status()["problems"] if x["id"] == "output.schedule"), None), what="error")
     assert p["level"] == "error" and not d.status()["ok"] and card.active is None
 
@@ -385,7 +523,7 @@ def test_packets_go_out_in_bursts_with_the_gaps_the_spec_asks_for(card, make):
 
 def test_pacing_can_be_changed_and_switched_off(card, make):
     stamps = []
-    d = make(factory=recorder_factory(stamps), options=FpgaOptions(dither=False, broadcast="", burst=4, gap_us=500))
+    d = make(factory=recorder_factory(stamps), options=opts(burst=4, gap_us=500))
     ready(card, d)
     d.send(picture())
     wait_for(lambda: len(stamps) >= 206)
@@ -394,7 +532,7 @@ def test_pacing_can_be_changed_and_switched_off(card, make):
     assert t[205] - t[0] >= 51 * 500e-6 * 0.99          # 51 gaps of 500 us
 
     stamps2 = []
-    d2 = make(factory=recorder_factory(stamps2), options=FpgaOptions(dither=False, broadcast="", pace=False))
+    d2 = make(factory=recorder_factory(stamps2), options=opts(pace=False))
     wait_for(lambda: d2.status()["answering"])
     d2.send(picture(4))
     wait_for(lambda: len(stamps2) >= 206)
@@ -415,9 +553,11 @@ def test_pacing_costs_what_the_spec_says_per_frame(card, make):
 
 # ------------------------------------------------------------------ options, settings, factory
 def test_options_parse():
-    o = FpgaOptions.parse("planes=11, dither=off,burst=4,gap_us=300,broadcast=10.0.0.255/255.255.255.255")
-    assert (o.planes, o.dither, o.burst, o.gap_us) == (11, False, 4, 300.0)
+    o = FpgaOptions.parse("planes=11, dither=off,burst=4,gap_us=300,broadcast=10.0.0.255/255.255.255.255,"
+                          "announce_port=0")
+    assert (o.planes, o.dither, o.burst, o.gap_us, o.announce_port) == (11, False, 4, 300.0, 0)
     assert o.broadcasts == ["10.0.0.255", "255.255.255.255"]
+    assert FpgaOptions().broadcasts == ["10.75.255.255"] and FpgaOptions().announce_port == 5776
     assert FpgaOptions.parse(None) == FpgaOptions() and FpgaOptions().planes == 12 and FpgaOptions().burst == 8
     with pytest.raises(ValueError):
         FpgaOptions.parse("speed=3")
@@ -427,9 +567,11 @@ def test_options_parse():
 
 def test_settings_defaults_and_old_files():
     s = OutputSettings.model_validate({"driver": "colorlight", "interface": "eth0", "brightness": 0.3})
-    assert s.card_address == "10.75.0.2" and s.card_port == 5775
+    assert s.card_address == "" and s.card_port == 5775
     assert OutputSettings(driver="fpga", card_address=" 192.168.1.5 ").card_address == "192.168.1.5"
-    for bad in ("", "10.0.0.1:80", "a b"):
+    assert OutputSettings(card_address="  ").card_address == ""
+    assert OutputSettings.model_validate({"card_address": "10.75.0.2"}).card_address == "10.75.0.2"   # pinned, kept
+    for bad in ("10.0.0.1:80", "a b", "10.75.0.0/16"):
         with pytest.raises(ValueError):
             OutputSettings(card_address=bad)
 
@@ -462,21 +604,40 @@ def test_checks_when_everything_works(card, make):
     assert list(c) == ["output.driver", "output.receiver", "output.firmware", "output.schedule", "output.packets",
                        "output.timing", "output.wiring", "audio.device"]
     assert all(v["level"] == "ok" for v in c.values())
-    assert c["output.receiver"]["title"] == "LED card found" and "0.1" in c["output.receiver"]["detail"]
+    assert c["output.receiver"]["title"] == "LED card found"
+    assert c["output.receiver"]["detail"].startswith(f"Found card 127.0.0.1 (MAC {P.mac_for_ip('127.0.0.1')}, "
+                                                     "firmware 0.1)")
     assert "12 bits at 60 Hz" in c["output.schedule"]["title"]
 
 
-def test_checks_when_the_card_does_not_answer(make):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(("127.0.0.1", 0))
-    try:
-        d = make(port=s.getsockname()[1])
-        wait_for(lambda: not d.status()["ok"], what="no answer")
-        c = checks_of(d)
-    finally:
-        s.close()
+def test_checks_when_the_card_does_not_answer(make, mute):
+    d = make(port=mute)
+    wait_for(lambda: not d.status()["ok"], what="no answer")
+    c = checks_of(d)
     assert c["output.driver"]["level"] == "ok" and c["output.receiver"]["level"] == "error"
     assert "output.firmware" not in c and "output.schedule" not in c and "output.wiring" not in c
+
+
+def test_checks_when_no_card_is_found(make, mute):
+    d = make(address="", port=mute, options=opts(broadcast="127.0.0.1"))
+    wait_for(lambda: not d.status()["ok"], what="nothing found")
+    c = checks_of(d, card_address="")
+    assert c["output.receiver"]["level"] == "error" and "255.255.0.0" in c["output.receiver"]["fix"]
+
+
+def test_checks_name_the_other_cards(card, make):
+    d = make(address="")
+    card.announce_to = ("127.0.0.1", d.listen_port)
+    ready(card, d)
+    other = FakeCard(uid=bytes.fromhex("0102030405060708"), announce_to=("127.0.0.1", d.listen_port))
+    try:
+        wait_for(lambda: d.status()["others"], what="the second card")
+        c = checks_of(d, card_address="")
+    finally:
+        other.close()
+    ids = list(c)
+    assert ids.index("output.cards") == ids.index("output.receiver") + 1
+    assert c["output.receiver"]["level"] == "ok" and c["output.cards"]["level"] == "warning"
 
 
 def test_checks_show_the_cards_complaints(card, make):
@@ -509,6 +670,14 @@ def test_checks_for_a_bad_address_and_for_looking(card):
     c = {x["id"]: x for x in setup_checks(Settings(output=OutputSettings(driver="fpga")), st, AUDIO_OK)}
     assert c["output.settings"]["level"] == "error" and "no-such-host.invalid" in c["output.settings"]["detail"]
     looking = {"driver": "fpga", "ok": True, "error": None, "open": True, "problems": [], "card": None,
-               "address": "10.75.0.2:5775"}
+               "address": None, "found": None, "others": []}
     c = {x["id"]: x for x in setup_checks(Settings(output=OutputSettings(driver="fpga")), looking, AUDIO_OK)}
-    assert c["output.receiver"]["level"] == "info" and "10.75.0.2:5775" in c["output.receiver"]["detail"]
+    assert c["output.receiver"]["level"] == "info" and "announce" in c["output.receiver"]["detail"]
+    pinned = OutputSettings(driver="fpga", card_address="10.75.3.4")
+    c = {x["id"]: x for x in setup_checks(Settings(output=pinned), {**looking, "address": "10.75.3.4:5775"}, AUDIO_OK)}
+    assert c["output.receiver"]["level"] == "info" and "10.75.3.4:5775" in c["output.receiver"]["detail"]
+    found = {"ip": "10.75.3.4", "port": 5775, "mac": "02:5a:75:00:03:04", "uid": "00" * 8, "uid_valid": True,
+             "fixed_address": False, "fw": "0.2", "auto": True}
+    c = {x["id"]: x for x in setup_checks(Settings(output=OutputSettings(driver="fpga")),
+                                          {**looking, "address": "10.75.3.4:5775", "found": found}, AUDIO_OK)}
+    assert c["output.receiver"]["level"] == "info" and "10.75.3.4" in c["output.receiver"]["title"]

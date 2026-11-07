@@ -145,19 +145,28 @@ def _fpga_checks(o: OutputSettings, st: dict[str, Any]) -> list[dict[str, Any]]:
             out.append(found[cid])
     if not opened:
         return out
-    card = st.get("card")
-    if "output.receiver" in found and found["output.receiver"]["level"] == "error":
+    card, heard = st.get("card"), st.get("found")
+    if "output.receiver" in found:
         out.append(found["output.receiver"])
         return out
     if card is None:
-        out.append(check("output.receiver", "info", "Looking for the LED card",
-                         f"Asking {st.get('address')}; a card with the custom firmware answers within a second."))
+        if heard:
+            out.append(check("output.receiver", "info", f"Found card {heard['ip']}",
+                             f"MAC {heard['mac']}, firmware {heard['fw']}; asking it for its status."))
+        elif o.card_address:
+            out.append(check("output.receiver", "info", "Looking for the LED card",
+                             f"Asking {st.get('address')}; a card with the custom firmware answers within a second."))
+        else:
+            out.append(check("output.receiver", "info", "Looking for the LED card",
+                             "Listening for the cards' announcements and asking who is there; a card with the "
+                             "custom firmware announces itself every second."))
         return out
-    if "output.receiver" in found:        # answering from another address than the setting
-        out.append(found["output.receiver"])
-    else:
-        out.append(check("output.receiver", "ok", "LED card found",
-                         f"Custom firmware {card['firmware']} at {st.get('address')}, up for {card['uptime_s']:.0f} s."))
+    where = (f"Found card {heard['ip']} (MAC {heard['mac']}, firmware {card['firmware']})" if heard
+             else f"Custom firmware {card['firmware']} at {st.get('address')}")
+    pinned = " Its address is set in Settings → LED output." if o.card_address else ""
+    out.append(check("output.receiver", "ok", "LED card found", f"{where}, up for {card['uptime_s']:.0f} s.{pinned}"))
+    if "output.cards" in found:
+        out.append(found["output.cards"])
     if "output.firmware" in found:
         out.append(found["output.firmware"])
         return out

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
-import type { AudioDevice, ColorOrder, NetInterface, Settings, TestPattern } from '../api/types';
+import type { AudioDevice, ColorOrder, NetInterface, OutputSettings, Settings, TestPattern } from '../api/types';
 import { Field, Segmented, Slider, Toggle } from '../components/ui';
 import { SetupList } from '../components/SetupChecks';
 import { patchSettings, settingsRes, useAppState, useSettings } from '../state/app';
@@ -68,7 +68,6 @@ function OutputCard({ s, ifaces }: { s: Settings; ifaces: NetInterface[] | null 
   const o = s.output;
   const [brightness, setBrightness] = useDebouncedValue(o.brightness, (v) => void patchSettings({ output: { brightness: v } }));
   const [gamma, setGamma] = useDebouncedValue(o.gamma, (v) => void patchSettings({ output: { gamma: v } }));
-  const [address, setAddress] = useDebouncedValue(o.card_address, (v) => void patchSettings({ output: { card_address: v.trim() } }), 600);
   const known = ifaces?.some((i) => i.id === o.interface) ?? true;
   return (
     <section className="card">
@@ -87,11 +86,7 @@ function OutputCard({ s, ifaces }: { s: Settings; ifaces: NetInterface[] | null 
           </select>
         </Field>
       )}
-      {o.driver === 'fpga' && (
-        <Field label="Card address" hint="Where the card is on the network (10.75.0.2 unless the firmware was built otherwise). This computer's port for the card needs 10.75.0.1, mask 255.255.255.0.">
-          <input type="text" value={address} onChange={(e) => setAddress(e.target.value)} spellCheck={false} aria-label="Card address" />
-        </Field>
-      )}
+      {o.driver === 'fpga' && <CardAddress o={o} />}
       <Field label="Brightness"><Slider label="Brightness" value={brightness} min={0} max={1} step={0.01} onChange={setBrightness} format={(v) => `${Math.round(v * 100)}%`} /></Field>
       <Field label="Gamma"><Slider label="Gamma" value={gamma} min={0.5} max={3} step={0.05} onChange={setGamma} format={(v) => v.toFixed(2)} /></Field>
       <Field label="Rotate 180°" hint="Turns the whole picture over. Panel wiring (below) switches it off and handles upside-down panels itself."><Toggle label="Rotate 180 degrees" checked={o.rotate180} onChange={(v) => void patchSettings({ output: { rotate180: v } })} /></Field>
@@ -106,6 +101,38 @@ function OutputCard({ s, ifaces }: { s: Settings; ifaces: NetInterface[] | null 
         </div>
       </Field>
     </section>
+  );
+}
+
+function CardAddress({ o }: { o: OutputSettings }) {
+  const out = useAppState()?.output;
+  const found = out?.found ?? null;
+  const others = out?.others ?? [];
+  const [address, setAddress] = useDebouncedValue(o.card_address, (v) => void patchSettings({ output: { card_address: v.trim() } }), 600);
+  // "Fixed" shows the field before anything is typed in it; an address that stays empty is still automatic.
+  const [fixed, setFixed] = useState(o.card_address !== '');
+  useEffect(() => {
+    if (o.card_address) setFixed(true);
+  }, [o.card_address]);
+  const choose = (mode: 'auto' | 'fixed') => {
+    setFixed(mode === 'fixed');
+    if (mode === 'auto') setAddress('');
+    else if (!address && found) setAddress(found.ip);   // pin the card in use
+  };
+  const card = (c: { ip: string; mac: string; fw: string }) => `${c.ip} · MAC ${c.mac} · firmware ${c.fw}`;
+  return (
+    <Field label="Card address" hint="Automatic finds the card by its announcements. This computer's port for the card needs the address 10.75.0.1 with netmask 255.255.0.0.">
+      <div>
+        <div className="row">
+          <Segmented value={fixed ? 'fixed' : 'auto'} options={[{ value: 'auto', label: 'Automatic' }, { value: 'fixed', label: 'Fixed address' }]} onChange={choose} />
+          {fixed && <input type="text" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="10.75.c.d" spellCheck={false} aria-label="Card address" />}
+        </div>
+        <div className="muted small">
+          {found ? `${found.auto ? 'Found' : 'Card'}: ${card(found)}` : out?.answering ? 'The card answers; it has not said who it is.' : fixed && address ? 'No answer yet.' : 'Looking for the card…'}
+        </div>
+        {others.length > 0 && <div className="muted small">Also on the network: {others.map(card).join('; ')}</div>}
+      </div>
+    </Field>
   );
 }
 

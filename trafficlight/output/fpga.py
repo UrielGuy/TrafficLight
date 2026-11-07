@@ -1,8 +1,14 @@
 """Output driver for the custom FPGA firmware of the Colorlight 5A-75B (docs/FIRMWARE.md).
 
-Plain UDP to the card (10.75.0.2:5775 by default): no raw sockets, no Npcap, no root. The card is a
-streamer; everything else happens here, on one sender thread:
+Plain UDP to the card (port 5775): no raw sockets, no Npcap, no root. The card is a streamer; everything
+else happens here, on one sender thread:
 
+* Finding the card (section 6.1): every card broadcasts an ANNOUNCE to 10.75.255.255:5776 every second.
+  The driver listens on that port and, from the same socket, asks (ANNOUNCE_REQ to 10.75.255.255:5775),
+  because a firewall that drops unsolicited broadcasts still lets the answer to its own broadcast in. It
+  drives the first card it hears, follows that card (same flash id) to a new address, reports any other
+  card, and takes whichever card announces itself once its card has gone quiet. A card address in the
+  settings pins the card instead; it is still asked who it is.
 * ``send()`` / ``send_card()`` only copy the picture into a slot and wake the thread, which maps it
   (``Mapper``), packs it (``hub75.pack.Packer``: gamma, brightness, temporal dithering, bit planes) and
   sends the newest one; pictures it could not get to are dropped.
@@ -51,6 +57,9 @@ RESEND_EVERY = 1.0           # ... but not more often than this
 HEALTH_WINDOW = 10.0         # seconds over which the card's loss counters are judged
 SWITCH_INTERVAL = 0.0002     # a thread spinning in the pacer must hand the GIL over within a fraction of a ms
 MIN_PLANES = 8               # below this the picture is too coarse to be worth showing: report instead
+ASK_EVERY = 1.0              # ANNOUNCE_REQ this often while no card is known ...
+ASK_EVERY_FOUND = 5.0        # ... and this often once one is (other cards show up through a firewall too)
+OTHERS_FORGET = 15.0         # another card not heard for this long is no longer reported
 
 
 @dataclass
@@ -68,7 +77,8 @@ class FpgaOptions:
     burst: int = 8                    # section 9: at most this many packets back to back ...
     gap_us: float = 250.0             # ... then at least this long before the next group
     chunk_bytes: int = P.MAX_CHUNK_DATA
-    broadcast: str = "255.255.255.255/10.75.0.255"    # asked too when the card's address does not answer
+    broadcast: str = P.BROADCAST_IP   # where ANNOUNCE_REQ goes when no address is set ("/" between several)
+    announce_port: int = P.ANNOUNCE_PORT    # listened on for the cards' announcements; 0 = any free port
 
     @classmethod
     def parse(cls, text: str | None) -> "FpgaOptions":
@@ -106,6 +116,26 @@ class FpgaOptions:
     @property
     def broadcasts(self) -> list[str]:
         return [a for a in self.broadcast.split("/") if a]
+
+
+@dataclass(frozen=True)
+class _Found:
+    """A card that announced itself, and where from (its replies come from there too)."""
+    announce: P.Announce
+    addr: tuple[str, int]
+    heard_at: float
+
+    @property
+    def uid(self) -> bytes:
+        return self.announce.uid
+
+    def info(self) -> dict[str, Any]:
+        a = self.announce
+        return {"ip": self.addr[0], "port": self.addr[1], "mac": a.mac, "uid": a.uid_hex,
+                "uid_valid": a.flag(P.ANN_UID_VALID), "fixed_address": a.flag(P.ANN_FIXED_ADDRESS), "fw": a.firmware}
+
+    def __str__(self) -> str:
+        return f"{self.addr[0]} (MAC {self.announce.mac})"
 
 
 @dataclass
@@ -158,7 +188,14 @@ class FpgaDriver(OutputDriver):
         # mapper must not apply it a second time at 8 bits.
         self._mapper = self._make_mapper(self.settings)
         self._sock: socket.socket | None = None
-        self._addr: tuple[str, int] = (settings.card_address, settings.card_port)
+        self._listen_problem: dict[str, Any] | None = None
+        # The card's address: the one in the settings (pinned) or the one it announced; None until then.
+        self._addr: tuple[str, int] | None = None
+        self._pinned: tuple[str, int] | None = None
+        self._found: _Found | None = None
+        self._others: dict[bytes, _Found] = {}          # other cards heard, by flash id (replaced, never mutated)
+        self._next_ask = 0.0
+        self._ask_error: str | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -175,8 +212,7 @@ class FpgaDriver(OutputDriver):
         # card state (sender thread; status() reads)
         self._status: P.Status | None = None
         self._status_at = 0.0
-        self._opened_at = 0.0
-        self._configured: tuple[str, int] = self._addr      # where the settings say the card is
+        self._since = 0.0                                   # when the driver started talking to self._addr
         self._limits: CardLimits | None = None
         self._history: deque[tuple[float, P.Status]] = deque(maxlen=64)
         self._seq = 1
@@ -201,29 +237,58 @@ class FpgaDriver(OutputDriver):
     def open(self) -> None:
         if self._thread is not None:
             return
+        if self.settings.card_address:
+            try:
+                infos = socket.getaddrinfo(self.settings.card_address, self.settings.card_port,
+                                           socket.AF_INET, socket.SOCK_DGRAM)
+                self._addr = self._pinned = infos[0][4][:2]
+            except (OSError, UnicodeError) as e:
+                raise OutputError(f"The card's address {self.settings.card_address!r} cannot be resolved: {e}.",
+                                  "Set a numeric address, or leave it empty to find the card automatically, in "
+                                  "Settings → LED output.", check="output.settings",
+                                  title="The card's address is not valid") from e
+        port = self.options.announce_port
         try:
-            infos = socket.getaddrinfo(self.settings.card_address, self.settings.card_port,
-                                       socket.AF_INET, socket.SOCK_DGRAM)
-            self._addr = self._configured = infos[0][4][:2]
-        except (OSError, UnicodeError) as e:
-            raise OutputError(f"The card's address {self.settings.card_address!r} cannot be resolved: {e}.",
-                              "Set a numeric address (the firmware's is 10.75.0.2) in Settings → LED output.",
-                              check="output.settings", title="The card's address is not valid") from e
-        try:
-            sock = self._socket_factory()
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 18)
-            sock.bind(("", 0))
-            sock.setblocking(False)
+            try:
+                sock = self._open_socket(port)
+            except OSError as e:
+                if not port:
+                    raise
+                # Most likely another server of ours. Without the port the card is still found by asking.
+                sock = self._open_socket(0)
+                self._listen_problem = problem(
+                    "output.access", "Cannot listen for the LED card",
+                    f"UDP port {port}, where the cards announce themselves, is taken ({e}): probably another "
+                    "TrafficLight server is running on this computer. This one finds the card by asking instead.",
+                    "Stop the other server: two programs sending to one card fight over it.", "warning")
         except OSError as e:
             raise OutputError(f"Cannot open a UDP socket: {e}.", "Check that no firewall blocks this program.",
                               check="output.access", title="The network socket cannot be opened") from e
         self._sock = sock
-        self._opened_at = time.monotonic()
+        self._since = time.monotonic()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="fpga-sender", daemon=True)
         self._thread.start()
+
+    def _open_socket(self, port: int) -> socket.socket:
+        # No SO_REUSEADDR: with it a second server could bind the announce port too (always on Windows) and
+        # take the card's answers meant for this one, unnoticed.
+        sock = self._socket_factory()
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 18)
+            sock.bind(("", port))
+            sock.setblocking(False)
+        except OSError:
+            sock.close()
+            raise
+        return sock
+
+    @property
+    def listen_port(self) -> int | None:
+        """The UDP port the driver listens on (announcements and replies), once open."""
+        return self._sock.getsockname()[1] if self._sock is not None else None
 
     def send(self, frame: np.ndarray) -> None:
         self._offer(frame, False)
@@ -268,11 +333,13 @@ class FpgaDriver(OutputDriver):
         fps = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 and times[-1] > times[0] else 0.0
         if times and time.monotonic() - times[-1] > 1.0:
             fps = 0.0
-        st = self._status
+        st, addr, found = self._status, self._addr, self._found
         return {
             "driver": "fpga", "ok": error is None, "error": error, "interface": None,
             "open": self._thread is not None, "warnings": warnings, "problems": problems,
-            "address": f"{self._addr[0]}:{self._addr[1]}", "answering": self._answering(time.monotonic()),
+            "address": f"{addr[0]}:{addr[1]}" if addr else None, "answering": self._answering(time.monotonic()),
+            "found": {**found.info(), "auto": self._pinned is None} if found else None,
+            "others": [o.info() for o in self._others.values()],
             "card": self._card_info(st), "schedule": self._schedule_info(),
             "sent_fps": round(fps, 1), "frames": s.frames, "dropped": s.dropped, "held": s.held,
             "resent": s.resent, "holding": self._holding,
@@ -321,25 +388,19 @@ class FpgaDriver(OutputDriver):
         if self._thread is None:
             return out
         st = self._status
-        if self._send_problem is not None:
-            out.append(self._send_problem)
+        out += [p for p in (self._listen_problem, self._send_problem) if p is not None]
         if not self._answering(now):
-            if now - max(self._opened_at, self._status_at) >= ANSWER_TIMEOUT:
-                host, port = self._addr
-                out.append(problem(
-                    "output.receiver", "The LED card does not answer",
-                    f"No answer from {host}:{port}, nor to a broadcast." if st is None
-                    else f"The card at {host}:{port} stopped answering.",
-                    f"Check that the card is powered and runs the custom firmware, that the cable goes from its "
-                    f"Ethernet port to this computer, and that this computer's port has the address "
-                    f"{P.HOST_IP} with mask {P.NETMASK} (then `ping {P.CARD_IP}` works)."))
+            if now - max(self._since, self._status_at) >= ANSWER_TIMEOUT:
+                out.append(self._silence(now))
             return out
         assert st is not None
-        if self._addr != self._configured:
-            out.append(problem("output.receiver", "The card is at another address",
-                               f"The card answered from {self._addr[0]}, not from {self._configured[0]}. "
-                               "It is being used there.",
-                               f"Set the card address in Settings → LED output to {self._addr[0]}.", "warning"))
+        others = list(self._others.values())
+        if others:
+            out.append(problem("output.cards", "Several LED cards on the network",
+                               f"Driving the card at {self._found or self._addr[0]}; also heard: "
+                               f"{', '.join(map(str, others))}.",
+                               "One computer drives one card: unplug the others, or type the address of the one to "
+                               "drive in Settings → LED output → Card address.", "warning"))
         if st.proto_version != P.VERSION:
             out.append(problem("output.firmware", "The card's firmware is not compatible",
                                f"The card speaks protocol version {st.proto_version}, this program version {P.VERSION}.",
@@ -370,6 +431,34 @@ class FpgaDriver(OutputDriver):
                                "Lower the frame rate or the bit depth (TRAFFICLIGHT_FPGA planes=11) so the schedule "
                                "has more room (docs/FIRMWARE.md section 4).", "warning"))
         return out
+
+    def _silence(self, now: float) -> dict[str, Any]:
+        """The output.receiver problem when the card does not answer, with the likeliest cause."""
+        fix = (f"Check that the card is powered and runs the custom firmware, that the cable goes from its Ethernet "
+               f"port to this computer, and that this computer's port for the card has the address {P.HOST_IP} with "
+               f"netmask {P.NETMASK} (with 255.255.255.0 the cards' announcements and addresses are off its network).")
+        f, others = self._found, list(self._others.values())
+        if self._addr is None:
+            asked = ", ".join(self.options.broadcasts)
+            detail = "No card has announced itself" + (f" or answered a request sent to {asked}" if asked else "") + "."
+            if self._ask_error:
+                detail += f" Sending the request failed: {self._ask_error}."
+            return problem("output.receiver", "No LED card found", detail, fix)
+        host, port = self._addr
+        if f is not None and f.addr == self._addr and now - f.heard_at < ANSWER_TIMEOUT:
+            return problem("output.receiver", "The LED card does not answer",
+                           f"The card {f} announces itself but does not answer requests.",
+                           f"Give this computer's port for the card the netmask {P.NETMASK} (address {P.HOST_IP}): "
+                           f"with a smaller network the card's address {host} is sent elsewhere.")
+        if self._pinned is not None and others:
+            return problem("output.receiver", "The LED card does not answer",
+                           f"No answer from {host}:{port}, the address in the settings; a card announces itself at "
+                           f"{others[0]}.",
+                           f"Clear the card address in Settings → LED output to find the card automatically, or set "
+                           f"it to {others[0].addr[0]}.")
+        return problem("output.receiver", "The LED card does not answer",
+                       f"No answer from {host}:{port}." if self._status is None
+                       else f"The card at {host}:{port} stopped answering.", fix)
 
     # ---- internals
     def _make_mapper(self, s: OutputSettings) -> Mapper:
@@ -435,14 +524,71 @@ class FpgaDriver(OutputDriver):
             except P.ProtocolError:
                 continue
             if isinstance(pkt, P.Status):
-                self._on_status(pkt, src[0], now)
+                self._on_status(pkt, src[:2], now)
+            elif isinstance(pkt, P.Announce):
+                self._on_announce(pkt, src[:2], now)
 
-    def _on_status(self, st: P.Status, src: str, now: float) -> None:
-        if src != self._addr[0]:
-            if self._answering(now):
-                return          # a stray reply while the card we use is fine
-            # Found by broadcast: the card is not where the setting says. Use it where it is.
-            self._addr = (src, self._addr[1])
+    def _on_announce(self, a: P.Announce, src: tuple[str, int], now: float) -> None:
+        """A card said who it is (periodically or asked). The address it spoke from is where it listens."""
+        f = _Found(a, src, now)
+        cur = self._found
+        if self._pinned is not None:
+            mine = src == self._pinned
+        else:
+            # The card in use (followed to a new address: reflashed, or built with a fixed one), or the first
+            # card heard since there was none.
+            mine = cur is None or cur.uid == a.uid
+        if not mine:
+            self._others = {**self._others, a.uid: f}
+            return
+        self._found = f
+        if a.uid in self._others:
+            self._others = {u: o for u, o in self._others.items() if u != a.uid}
+        if self._pinned is None:
+            self._use(src, now)
+
+    def _use(self, addr: tuple[str, int], now: float) -> None:
+        """Talk to the card at addr from now on: what the driver knew about the card at the old address
+        (status, frame ids, the schedule it runs) no longer holds."""
+        if addr == self._addr:
+            return
+        self._addr = addr
+        self._since = now
+        self._status = None
+        self._history.clear()
+        self._next_id = self._sent_id = None
+        self._ready = False
+        self._resend = self._have_img
+        self._next_poll = self._next_upload = self._hold_until = 0.0
+
+    def _discover(self, now: float) -> None:
+        """Forget cards gone quiet and ask who is there: often while no card is known, now and then after."""
+        sock = self._sock
+        assert sock is not None
+        f = self._found
+        if self._pinned is None and f is not None and not self._answering(now) and now - f.heard_at >= ANSWER_TIMEOUT:
+            # Neither answering nor announcing: gone. The next card to announce itself is taken (the address is
+            # kept meanwhile, so this one coming back is no change).
+            self._found = None
+            self._next_ask = now
+        if any(now - o.heard_at > OTHERS_FORGET for o in self._others.values()):
+            self._others = {u: o for u, o in self._others.items() if now - o.heard_at <= OTHERS_FORGET}
+        if now < self._next_ask:
+            return
+        self._next_ask = now + (ASK_EVERY if self._found is None else ASK_EVERY_FOUND)
+        targets = [self._pinned] if self._pinned else [(h, self.settings.card_port) for h in self.options.broadcasts]
+        self._seq = (self._seq + 1) & 0xFFFFFFFF
+        req = P.build_announce_request(self._seq)
+        self._ask_error = None
+        for t in targets:
+            try:
+                sock.sendto(req, t)
+            except OSError as e:
+                self._ask_error = str(e)
+
+    def _on_status(self, st: P.Status, src: tuple[str, int], now: float) -> None:
+        if src != self._addr:
+            return          # from a card this driver does not drive
         self._status_at = now
         if not (st.seq == self._min_seq or newer(st.seq, self._min_seq)):
             return          # the reply to a request sent before the last schedule upload: stale
@@ -490,19 +636,14 @@ class FpgaDriver(OutputDriver):
     def _maintain(self, now: float) -> None:
         sock = self._sock
         assert sock is not None
-        if now >= self._next_poll:
+        self._discover(now)
+        if self._addr is not None and now >= self._next_poll:
             self._next_poll = now + POLL_SECONDS
             self._seq = (self._seq + 1) & 0xFFFFFFFF
-            req = P.build_status_request(self._seq)
-            targets = [self._addr[0]]
-            if not self._answering(now):
-                targets += self.options.broadcasts
-            for host in targets:
-                try:
-                    sock.sendto(req, (host, self._addr[1]))
-                except OSError as e:
-                    if host == self._addr[0]:
-                        self._send_failed(e)
+            try:
+                sock.sendto(P.build_status_request(self._seq), self._addr)
+            except OSError as e:
+                self._send_failed(e)
         if self._limits is not None:
             key = (self._limits, round(self._fps, 3))
             if key != self._target_key:
@@ -604,7 +745,7 @@ class FpgaDriver(OutputDriver):
     def _transmit(self, packets: list[bytes]) -> None:
         """Section 9: bursts of at most `burst` packets, `gap_us` between the groups."""
         sock, addr, o = self._sock, self._addr, self.options
-        assert sock is not None
+        assert sock is not None and addr is not None
         gap = o.gap_us / 1e6
         last = 0.0
         for i, data in enumerate(packets):
@@ -624,4 +765,4 @@ class FpgaDriver(OutputDriver):
         self._send_problem = problem(
             "output.send", "Sending to the card failed", f"Sending failed: {e}",
             f"Check that the computer's network port for the card is up and has an address in the card's network "
-            f"({P.HOST_IP}/24); the driver keeps retrying.")
+            f"({P.HOST_IP}, netmask {P.NETMASK}); the driver keeps retrying.")

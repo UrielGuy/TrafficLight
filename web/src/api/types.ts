@@ -53,6 +53,7 @@ export type ColorOrder = 'rgb' | 'rbg' | 'grb' | 'gbr' | 'brg' | 'bgr';
 export interface OutputSettings {
   driver: OutputDriver;
   interface: string | null;
+  /** fpga: '' = automatic (the card announces itself), else the card's address (pinned). */
   card_address: string;
   card_port: number;
   brightness: number;
@@ -191,7 +192,8 @@ export type NowSource = 'schedule' | 'show' | 'editor' | 'test' | 'idle';
 /** One setup check (trafficlight/checks.py). error = the sign or the sound cannot work; warning = works, but
  * something is off; info = a neutral note or a hint; ok = fine. Ids are stable: output.driver, output.interface,
  * output.access, output.settings, output.link, output.send, output.receiver, output.card_size, output.wiring,
- * audio.backend, audio.device, server.web_ui. */
+ * audio.backend, audio.device, server.web_ui; the custom firmware adds output.cards, output.firmware,
+ * output.schedule, output.packets, output.timing. */
 export type CheckLevel = 'error' | 'warning' | 'info' | 'ok';
 export interface SetupCheck {
   id: string;
@@ -199,6 +201,16 @@ export interface SetupCheck {
   title: string;
   detail: string;
   fix: string | null;
+}
+/** A custom-firmware card that announced itself (docs/FIRMWARE.md 6.7). */
+export interface FoundCard {
+  ip: string;
+  port: number;
+  mac: string;
+  uid: string;            // the flash's unique id, hex
+  uid_valid: boolean;
+  fixed_address: boolean; // built with a fixed address instead of the one from the id
+  fw: string;
 }
 export interface State {
   now: {
@@ -215,7 +227,15 @@ export interface State {
     random_enabled: boolean;
     random_in: number | null;
   };
-  output: { driver: string; ok: boolean; error: string | null; interface: string | null; fps: number };
+  output: {
+    driver: string; ok: boolean; error: string | null; interface: string | null; fps: number;
+    // fpga only: where the card is driven ("ip:port", null until found), whether it answers, the card in use
+    // (auto: found by its announcements rather than set in the settings) and other cards heard.
+    address?: string | null;
+    answering?: boolean;
+    found?: (FoundCard & { auto: boolean }) | null;
+    others?: FoundCard[];
+  };
   audio: { ok: boolean; error: string | null; device: string | null; device_name: string | null; volume: number; voices: number };
   checks: SetupCheck[];   // in a fixed order, most basic first
   sets_rev: number;

@@ -92,6 +92,83 @@ def test_chunk_builder_enforces_alignment():
         P.build_frame_chunk(1, P.MAX_CHUNKS, 0, bytes(32))
 
 
+# -- finding the card (sections 6.1, 6.7) ---------------------------------------------------
+
+def _announce_bytes(**kw):
+    a = P.Announce(uid=bytes.fromhex("0102030405060708"), ip="10.75.1.8", mac="02:5a:75:00:01:08", udp_port=5775,
+                   fw_major=1, fw_minor=2, flags=P.ANN_UID_VALID | P.ANN_HAVE_FRAME, fw_build=0xCAFEF00D,
+                   uptime_ms=123456, seq=9)
+    return a, P.build_announce(a)
+
+
+def test_announce_round_trip_and_layout():
+    req = P.build_announce_request(seq=77)
+    assert len(req) == P.COMMON_BYTES and req[5] == P.TYPE_ANNOUNCE_REQ == 0x05
+    assert P.parse(req) == P.AnnounceRequest(77)
+    a, data = _announce_bytes()
+    assert len(data) == P.COMMON_BYTES + P.ANNOUNCE_BODY_BYTES and P.ANNOUNCE_BODY_BYTES == 32
+    assert data[5] == P.TYPE_ANNOUNCE == 0x82 and P.parse(data) == a
+    assert P.ANNOUNCE_PORT == 5776 and P.BROADCAST_IP == "10.75.255.255"
+    body = data[P.COMMON_BYTES:]
+    assert body[:4] == bytes((1, 1, 2, 5))                              # version, fw 1.2, flags
+    assert body[4:8] == (0xCAFEF00D).to_bytes(4, "little")
+    assert body[8:16] == bytes.fromhex("0102030405060708")               # the id bytes as read
+    assert body[16:22] == bytes((0x02, 0x5A, 0x75, 0x00, 1, 8))          # MAC, network order
+    assert body[22:24] == (5775).to_bytes(2, "little")
+    assert body[24:28] == bytes((10, 75, 1, 8))                          # IP, network order
+    assert body[28:32] == (123456).to_bytes(4, "little")
+    assert a.firmware == "1.2" and a.uid_hex == "0102030405060708" and a.flag(P.ANN_HAVE_FRAME)
+
+
+@pytest.mark.parametrize("bad", [
+    _announce_bytes()[1][:-1],
+    P.build_announce_request()[:6] + b"\x01\x00" + P.build_announce_request()[8:] + b"x",      # a request with a body
+])
+def test_bad_announce_packets_are_rejected(bad):
+    with pytest.raises(P.ProtocolError):
+        P.parse(bad)
+
+
+@pytest.mark.parametrize("uid, ip", [
+    ("0102030405060708", "10.75.1.8"),       # fold 0x0008: c = 0 -> 1
+    ("1200340056007800", "10.75.8.1"),       # 0x1200 ^ 0x3400 ^ 0x5600 ^ 0x7800 = 0x0800: d = 0 -> 1
+    ("00000000000000ff", "10.75.1.254"),     # c = 0 -> 1, d = 255 -> 254
+    ("000000000000ff00", "10.75.254.1"),     # c = 255 -> 254
+    ("ffffffffffffffff", "10.75.1.1"),       # a dead flash: every word cancels, still an address
+    ("e6614c311b5a2f30", None),
+])
+def test_the_address_comes_from_the_flash_id(uid, ip):
+    u = bytes.fromhex(uid)
+    v = int(uid, 16)
+    fold = ((v >> 48) ^ (v >> 32) ^ (v >> 16) ^ v) & 0xFFFF
+    assert P.uid_fold(u) == fold
+    got_ip, mac = P.address_from_uid(u)
+    c, d = (min(max(b, 1), 254) for b in divmod(fold, 256))
+    assert got_ip == (ip or f"10.75.{c}.{d}") == f"10.75.{c}.{d}"
+    assert mac == f"02:5a:75:00:{c:02x}:{d:02x}" == P.mac_for_ip(got_ip)
+
+
+def test_flash_id_validity_and_size():
+    assert P.uid_valid(bytes.fromhex("e6614c311b5a2f30"))
+    assert not P.uid_valid(bytes(8)) and not P.uid_valid(b"\xff" * 8)
+    with pytest.raises(ValueError):
+        P.address_from_uid(bytes(7))
+
+
+def test_the_card_model_answers_an_announce_request(sched):
+    uid = bytes.fromhex("e6614c311b5a2f30")
+    card = Card(uid=uid)
+    a = P.parse(card.receive(P.build_announce_request(31)))
+    ip, mac = P.address_from_uid(uid)
+    assert isinstance(a, P.Announce) and a.seq == 31 and a.uid == uid and (a.ip, a.mac) == (ip, mac)
+    assert a.udp_port == P.PORT and a.flags == P.ANN_UID_VALID and a.firmware == "0.1"
+    feed(card, [P.build_schedule(sched.to_bytes())] + P.chunk_frame(frame_bytes(sched, 1), 1, sched.schedule_id))
+    card.boundary()
+    assert P.parse(card.receive(P.build_announce_request())).flag(P.ANN_HAVE_FRAME)
+    fixed = Card(uid=bytes(8), ip="10.75.9.10").announce()
+    assert (fixed.ip, fixed.mac, fixed.flags) == ("10.75.9.10", "02:5a:75:00:09:0a", P.ANN_FIXED_ADDRESS)
+
+
 def test_frame_id_comparison_wraps():
     assert newer(1, 0) and newer(0, 0xFFFFFFFF) and not newer(0xFFFFFFFF, 0) and not newer(5, 9) and not newer(5, 5)
 

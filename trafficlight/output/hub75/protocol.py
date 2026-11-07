@@ -1,11 +1,13 @@
 """UDP packets between the host and the card (docs/FIRMWARE.md section 6), byte-exact.
 
 Every datagram starts with the 16-byte common header; the body depends on the type. All
-integers are little-endian. ``parse`` is the card's parser too: what it rejects, the gateware
-rejects (counted as bad packets), and the receiver model in ``model.py`` builds on it.
+integers are little-endian, except the addresses in ANNOUNCE (network order). ``parse`` is the
+card's parser too: what it rejects, the gateware rejects (counted as bad packets), and the
+receiver model in ``model.py`` builds on it.
 """
 from __future__ import annotations
 
+import socket
 import struct
 from dataclasses import dataclass
 
@@ -13,11 +15,12 @@ from .schedule import ENTRY_BYTES, HEADER_BYTES
 
 MAGIC = b"5A75"
 VERSION = 1
-CARD_IP = "10.75.0.2"            # built into the gateware
-HOST_IP = "10.75.0.1"            # the host's static address on the direct link (host-side default)
-NETMASK = "255.255.255.0"
-CARD_MAC = "02:5a:75:00:00:02"
+HOST_IP = "10.75.0.1"            # the host's static address on the sign's network (section 6.1)
+NETMASK = "255.255.0.0"          # /16: the cards are 10.75.1.1 .. 10.75.254.254, outside the hosts' 10.75.0.x
+BROADCAST_IP = "10.75.255.255"   # every card on the network; where ANNOUNCE_REQ goes and ANNOUNCE comes from
+MAC_PREFIX = bytes((0x02, 0x5A, 0x75, 0x00))     # locally administered; the last two bytes are the IP's
 PORT = 5775                      # the card listens here; replies go to the request's source port
+ANNOUNCE_PORT = 5776             # the card broadcasts its ANNOUNCE to this port every second
 
 COMMON_BYTES = 16
 MTU_PAYLOAD = 1472               # UDP payload on a 1500-byte MTU
@@ -27,6 +30,7 @@ MAX_CHUNK_DATA = (MTU_PAYLOAD - COMMON_BYTES - CHUNK_HEADER_BYTES) // CHUNK_ALIG
 MAX_CHUNKS = 512                 # the card's chunk bitmap
 
 STATUS_REQ, FRAME_DATA, FRAME_COMMIT, SCHEDULE, STATUS = 0x01, 0x02, 0x03, 0x04, 0x81
+TYPE_ANNOUNCE_REQ, TYPE_ANNOUNCE = 0x05, 0x82
 
 # Error codes in the status reply (last_error).
 ERR_NONE, ERR_BAD_PACKET, ERR_SCHED_TICK, ERR_SCHED_LIMITS, ERR_SCHED_ENTRY = 0, 1, 2, 3, 4
@@ -38,10 +42,15 @@ ERROR_NAMES = {ERR_NONE: "ok", ERR_BAD_PACKET: "bad packet", ERR_SCHED_TICK: "sc
 
 # Status flags.
 FLAG_HAVE_FRAME, FLAG_SCHED_ACTIVE, FLAG_SCHED_PENDING, FLAG_FRAME_PENDING, FLAG_BLANK = 1, 2, 4, 8, 16
+# Announce flags.
+ANN_UID_VALID, ANN_FIXED_ADDRESS, ANN_HAVE_FRAME = 1, 2, 4
 
 _COMMON = struct.Struct("<4sBBHII")
 _CHUNK = struct.Struct("<IHHII")
 _COMMIT = struct.Struct("<IIIHH")
+_ANNOUNCE = struct.Struct("<BBBBI8s6sH4sI")
+ANNOUNCE_BODY_BYTES = _ANNOUNCE.size        # 32
+UID_BYTES = 8
 
 # (name, struct code) of the status body, in wire order; offsets follow from the codes (no padding).
 STATUS_FIELDS: tuple[tuple[str, str], ...] = (
@@ -153,7 +162,80 @@ class Status:
         return bool(self.flags & bit)
 
 
-Packet = StatusRequest | FrameChunk | FrameCommit | SchedulePacket | Status
+@dataclass(frozen=True)
+class AnnounceRequest:
+    seq: int = 0
+
+
+@dataclass(frozen=True)
+class Announce:
+    """Who a card is and where (section 6.7). ``uid`` is the 8 flash id bytes in the order read; ``ip`` and
+    ``mac`` are in their usual text forms."""
+    uid: bytes
+    ip: str
+    mac: str
+    udp_port: int = PORT
+    proto_version: int = VERSION
+    fw_major: int = 0
+    fw_minor: int = 0
+    flags: int = 0
+    fw_build: int = 0
+    uptime_ms: int = 0
+    seq: int = 0
+
+    @property
+    def firmware(self) -> str:
+        return f"{self.fw_major}.{self.fw_minor}"
+
+    @property
+    def uid_hex(self) -> str:
+        return self.uid.hex()
+
+    def flag(self, bit: int) -> bool:
+        return bool(self.flags & bit)
+
+
+Packet = StatusRequest | FrameChunk | FrameCommit | SchedulePacket | Status | AnnounceRequest | Announce
+
+
+# -- the card's address (section 6.1) ---------------------------------------------------
+
+def uid_valid(uid: bytes) -> bool:
+    """A flash that does not answer reads all 0 or all 1."""
+    return uid not in (bytes(UID_BYTES), b"\xff" * UID_BYTES)
+
+
+def uid_fold(uid: bytes) -> int:
+    """The 64-bit id folded to 16 bits: cards of one batch differ in a few low bits, so every bit counts."""
+    if len(uid) != UID_BYTES:
+        raise ValueError(f"a flash id is {UID_BYTES} bytes, got {len(uid)}")
+    u = int.from_bytes(uid, "big")
+    return ((u >> 48) ^ (u >> 32) ^ (u >> 16) ^ u) & 0xFFFF
+
+
+def address_from_uid(uid: bytes) -> tuple[str, str]:
+    """(IP, MAC) a card with this flash id gives itself: 10.75.c.d and 02:5a:75:00:c:d, where c, d are the
+    fold's bytes kept off 0 and 255 (a network and a broadcast address in every /24 view of the network)."""
+    fold = uid_fold(uid)
+    c, d = (min(max(b, 1), 254) for b in (fold >> 8, fold & 0xFF))
+    ip = f"10.75.{c}.{d}"
+    return ip, mac_for_ip(ip)
+
+
+def mac_for_ip(ip: str) -> str:
+    """02:5a:75:00:c:d for 10.75.c.d: the MAC follows the address, also for a build with a fixed one."""
+    return format_mac(MAC_PREFIX + socket.inet_aton(ip)[2:])
+
+
+def format_mac(mac: bytes) -> str:
+    return ":".join(f"{b:02x}" for b in mac)
+
+
+def parse_mac(text: str) -> bytes:
+    mac = bytes.fromhex(text.replace(":", "").replace("-", ""))
+    if len(mac) != 6:
+        raise ValueError(f"not a MAC address: {text!r}")
+    return mac
 
 
 # -- building ----------------------------------------------------------------------------
@@ -185,6 +267,16 @@ def build_schedule(table: bytes, seq: int = 0) -> bytes:
     if len(table) < HEADER_BYTES or (len(table) - HEADER_BYTES) % ENTRY_BYTES:
         raise ValueError("not a schedule table")
     return _common(SCHEDULE, len(table), seq) + table
+
+
+def build_announce_request(seq: int = 0) -> bytes:
+    return _common(TYPE_ANNOUNCE_REQ, 0, seq)
+
+
+def build_announce(a: Announce) -> bytes:
+    body = _ANNOUNCE.pack(a.proto_version, a.fw_major, a.fw_minor, a.flags, a.fw_build & 0xFFFFFFFF, a.uid,
+                          parse_mac(a.mac), a.udp_port, socket.inet_aton(a.ip), a.uptime_ms & 0xFFFFFFFF)
+    return _common(TYPE_ANNOUNCE, len(body), a.seq) + body
 
 
 def build_status(status: Status) -> bytes:
@@ -251,4 +343,14 @@ def parse(datagram: bytes) -> Packet:
             raise ProtocolError("status body size")
         values = _STATUS.unpack_from(body)
         return Status(**dict(zip((n for n, _ in STATUS_FIELDS), values)), seq=seq)
+    if ptype == TYPE_ANNOUNCE_REQ:
+        if body:
+            raise ProtocolError("announce request with a body")
+        return AnnounceRequest(seq)
+    if ptype == TYPE_ANNOUNCE:
+        if len(body) != ANNOUNCE_BODY_BYTES:
+            raise ProtocolError("announce body size")
+        ver, major, minor, flags, build, uid, mac, port, ip, uptime = _ANNOUNCE.unpack_from(body)
+        return Announce(uid=uid, ip=socket.inet_ntoa(ip), mac=format_mac(mac), udp_port=port, proto_version=ver,
+                        fw_major=major, fw_minor=minor, flags=flags, fw_build=build, uptime_ms=uptime, seq=seq)
     raise ProtocolError(f"unknown packet type {ptype:#x}")

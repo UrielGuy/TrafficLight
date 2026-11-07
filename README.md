@@ -21,7 +21,8 @@ scripts\run.bat        REM start the server; arguments are passed on
 Then open <http://localhost:8080>. `run.bat --port 8090 --data D:\tl-data` changes port and data
 directory. To drive the sign you also need Npcap installed with "Restrict Npcap driver's access to
 Administrators only" unticked (`docs/HARDWARE.md`, section 5). Without it the server runs and the UI
-says what is missing.
+says what is missing. With the custom card firmware no Npcap is needed, but the card's network port
+needs the address 10.75.0.1 with netmask 255.255.0.0 (same section).
 
 ## Raspberry Pi
 
@@ -56,7 +57,8 @@ journalctl -u trafficlight -f
 sudo systemctl restart trafficlight
 ```
 
-The Pi's `eth0` is for the receiver card (gigabit, direct cable). The phone or laptop reaches the UI
+The Pi's `eth0` is for the receiver card (gigabit, direct cable; with the custom card firmware it needs
+the static address 10.75.0.1/16, `docs/HARDWARE.md` section 5). The phone or laptop reaches the UI
 over Wi-Fi: join the Pi's network, or make the Pi the access point
 (`sudo nmcli device wifi hotspot ssid TrafficLight password <8+ characters>`, then
 `nmcli connection modify Hotspot connection.autoconnect yes`), and open `http://<pi-address>:8080`

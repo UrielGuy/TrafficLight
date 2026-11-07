@@ -81,7 +81,8 @@ class SetSummary(BaseModel):
 class OutputSettings(BaseModel):
     driver: Literal["colorlight", "fpga", "none"] = "none"   # colorlight = stock firmware (raw Ethernet); fpga = our firmware (UDP)
     interface: Optional[str] = None    # network interface id from /api/output/interfaces (colorlight only)
-    card_address: str = protocol.CARD_IP   # fpga: where the card is (docs/FIRMWARE.md section 6.1)
+    card_address: str = ""             # fpga: "" = automatic (the card announces itself), else the card's
+                                       # host name or IPv4 address (docs/FIRMWARE.md section 6.1)
     card_port: int = Field(protocol.PORT, ge=1, le=65535)
     brightness: float = 0.5            # 0..1
     gamma: float = 1.0                 # applied in software before sending. colorlight: 1.0 = leave to the receiver card;
@@ -96,8 +97,8 @@ class OutputSettings(BaseModel):
     @classmethod
     def _address_is_a_host(cls, v: str) -> str:
         v = v.strip()
-        if not v or any(c.isspace() or c in "/:" for c in v):
-            raise ValueError("card_address is a host name or an IPv4 address such as 10.75.0.2")
+        if any(c.isspace() or c in "/:" for c in v):
+            raise ValueError("card_address is empty (automatic), a host name or an IPv4 address such as 10.75.1.2")
         return v
 
     @field_validator("panel_order")

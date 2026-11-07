@@ -2,7 +2,8 @@
 
 ``Card`` is the receiver: three SDRAM frame slots, the chunk bitmap, commits, the schedule
 tables, and the pass boundary where frames and schedules switch. It takes datagrams and gives
-back the reply datagram, with the same counters the real card reports. ``Streamer`` turns a
+back the reply datagram, with the same counters the real card reports, and says who it is
+(ANNOUNCE). ``Streamer`` turns a
 frame buffer plus a schedule into light: the OE-on ticks of every pixel per frame, and the
 pulse train of one pixel. Tests prove the packer and the schedule through it, and gateware
 tests can compare against it.
@@ -20,6 +21,7 @@ from .schedule import BUFFER_BYTES, BYTES_PER_COLUMN, CardLimits, PORTS, Schedul
 
 BUFFERS = 3
 FW_VERSION = (0, 1)
+DEFAULT_UID = bytes.fromhex("e6614c311b5a2f30")      # a W25Q32JV-like id; any 8 bytes do
 
 
 def newer(a: int, b: int) -> bool:
@@ -41,9 +43,16 @@ class Card:
     """The receiver state machine, counters and status reply. ``boundary()`` is the streamer
     reaching the end of a pass (or, with no schedule active, any moment)."""
 
-    def __init__(self, limits: CardLimits = CardLimits(), sdram_bytes: int = 8 << 20):
+    def __init__(self, limits: CardLimits = CardLimits(), sdram_bytes: int = 8 << 20, uid: bytes = DEFAULT_UID,
+                 ip: str | None = None, mac: str | None = None, port: int = P.PORT):
+        """ip None: the address comes from the flash id (section 6.1); else it is fixed, as built with --ip."""
         self.limits = limits
         self.sdram_bytes = sdram_bytes
+        self.uid = uid
+        self.fixed_address = ip is not None
+        self.ip = ip or P.address_from_uid(uid)[0]
+        self.mac = mac or P.mac_for_ip(self.ip)
+        self.port = port
         self.buffers = [bytearray(BUFFER_BYTES) for _ in range(BUFFERS)]
         self.shown, self.spare, self.rx_buf = 0, 1, 2       # slot roles; `spare` holds the pending frame
         self.frame_pending = False
@@ -80,6 +89,8 @@ class Card:
             return None
         if isinstance(pkt, P.StatusRequest):
             return P.build_status(self.status(pkt.seq))
+        if isinstance(pkt, P.AnnounceRequest):
+            return P.build_announce(self.announce(pkt.seq))
         if isinstance(pkt, P.FrameChunk):
             self._chunk(pkt)
         elif isinstance(pkt, P.FrameCommit):
@@ -194,6 +205,14 @@ class Card:
                         sched_pending_id=self.pending.schedule_id if self.pending else 0,
                         frame_id_shown=self.frame_id_shown, frame_id_rx=self.rx.frame_id,
                         frame_ticks=self.frame_ticks, seq=seq, **self.counters)
+
+    def announce(self, seq: int = 0) -> P.Announce:
+        """The ANNOUNCE: the answer to a request (seq echoed) and the periodic broadcast (seq = its count)."""
+        flags = (P.ANN_UID_VALID * P.uid_valid(self.uid)) | (P.ANN_FIXED_ADDRESS * self.fixed_address) \
+            | (P.ANN_HAVE_FRAME * self.have_frame)
+        return P.Announce(uid=self.uid, ip=self.ip, mac=self.mac, udp_port=self.port, proto_version=P.VERSION,
+                          fw_major=FW_VERSION[0], fw_minor=FW_VERSION[1], flags=flags,
+                          uptime_ms=self.uptime_ms & 0xFFFFFFFF, seq=seq)
 
 
 class Streamer:

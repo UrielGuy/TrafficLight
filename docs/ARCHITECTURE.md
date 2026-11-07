@@ -51,7 +51,7 @@ web UI (React)  --REST + WebSocket-->  server (FastAPI)
 | `trafficlight/media/ingest.py` | Original -> prepared files (PyAV, Pillow): rotate, crop, trim, proxy, sound, thumbnail. |
 | `trafficlight/media/download.py` | Fetching a link with yt-dlp (as a library) and merging picture and sound with PyAV. |
 | `trafficlight/audio/` | `AudioEngine` contract (`base.py`) and the sounddevice mixer (`engine.py`). |
-| `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver (stock firmware, raw Ethernet), FPGA driver (`fpga.py`: custom firmware over UDP, options in `TRAFFICLIGHT_FPGA`; `Settings.output.card_address` / `card_port`, defaults 10.75.0.2:5775; gamma and brightness are applied by its packer, so `output.gamma` is the real gamma, 2.2), panel mapping (`mapping.py`), test patterns, the wiring rule (`wiring.py`: what the panels show → `panel_order` / `panel_flip`). |
+| `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver (stock firmware, raw Ethernet), FPGA driver (`fpga.py`: custom firmware over UDP, options in `TRAFFICLIGHT_FPGA`; `Settings.output.card_address` / `card_port`: the address `""` (the default) is automatic, the card is found by its announcements (docs/FIRMWARE.md 6.1, 6.7); an address pins it; port 5775; gamma and brightness are applied by its packer, so `output.gamma` is the real gamma, 2.2), panel mapping (`mapping.py`), test patterns, the wiring rule (`wiring.py`: what the panels show → `panel_order` / `panel_flip`). |
 | `trafficlight/output/hub75/` | Host side of the custom card firmware (`docs/FIRMWARE.md` is its contract): visit schedule, bit-plane packer, UDP packets, behavioural model of the card. |
 | `trafficlight/checks.py` | The setup checks (`State.checks`), built from the output and audio statuses. |
 | `trafficlight/store.py` | Sets and settings on disk. |
@@ -295,6 +295,10 @@ State = {
   "schedule": {"default_set": "…" | null, "random_minutes": 6, "random_enabled": true,
                "random_in": 123.0 | null},          // seconds until a random set is due; null = n/a
   "output": {"driver": "colorlight", "ok": true, "error": null, "interface": "…", "fps": 59.9, "render_ms": 1.2},
+             // driver "fpga" adds, among its counters:
+             // "address": "10.75.38.201:5775" | null (no card yet), "answering": true,
+             // "found": {"ip", "port", "mac", "uid" (hex), "uid_valid", "fixed_address", "fw", "auto"} | null,
+             // "others": [{"ip", "port", "mac", "uid", "uid_valid", "fixed_address", "fw"}, …]   (cards heard, not driven)
   "audio": {"ok": true, "error": null, "device": "…", "device_name": "…", "volume": 0.8, "voices": 1},
   "checks": [{"id": "output.link", "level": "error" | "warning" | "info" | "ok",
               "title": "The link is not gigabit", "detail": "…", "fix": "…" | null}, …],
@@ -316,8 +320,10 @@ cannot start), `output.interface` (none chosen, not found), `output.access`
 `output.receiver` (not answering), `output.card_size` (not 128×512),
 `output.wiring`, `audio.backend` (PortAudio missing), `audio.device`
 (missing, none, cannot open, stopped), `server.web_ui` (not built). The custom firmware
-driver has no interface, access or link checks (plain UDP); it adds `output.receiver` (card
-answers / not / at another address), `output.firmware` (version, fits this sign),
+driver has no interface or link checks (plain UDP; `output.access` is the socket, or the announce port 5776
+taken by another server); it adds `output.receiver` (card found and answering, nothing found, announces but
+does not answer, a pinned address that does not answer), `output.cards` (other cards heard and not driven),
+`output.firmware` (version, fits this sign),
 `output.schedule` (refresh schedule built and accepted, fewer planes than planned, rejected),
 `output.packets` (card drops packets or loses frames) and `output.timing` (card refresh stretching).
 
