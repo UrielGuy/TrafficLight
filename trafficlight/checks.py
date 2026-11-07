@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 from . import config
 from .model import OutputSettings, Settings
+from .output import network
 from .output.wiring import to_seen
 
 LEVELS = ("error", "warning", "info", "ok")
@@ -62,6 +63,9 @@ def _output_checks(o: OutputSettings, st: dict[str, Any]) -> list[dict[str, Any]
             out.append(check("output.driver", "error", "The LED output is not working", error))
         else:
             out.append(check("output.driver", "info", "Starting the LED output", "The driver is being opened."))
+    if st.get("network") is not None:
+        level, title, detail, fix = network.problem(st["network"], st.get("need_mbps"), st.get("frame_rate") or 0.0)
+        out.append(check("output.network", level, title, detail, fix))
     # A send failure usually means the port has no address in the card's network: then no card answers
     # either, so it comes before the card.
     for cid in ("output.settings", "output.access", "output.send"):

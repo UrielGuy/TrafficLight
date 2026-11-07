@@ -47,6 +47,7 @@ from .hub75.model import newer
 from .hub75.pack import Packer
 from .hub75.schedule import CardLimits, Schedule, ScheduleError, ScheduleParams, build
 from .mapping import Mapper, validate
+from .network import NetworkProbe, needed_mbps
 
 POLL_SECONDS = 0.5           # spec section 9: the status about twice a second
 ANSWER_TIMEOUT = 2.0         # no status for this long: the card does not answer
@@ -175,10 +176,14 @@ def wait_until(t: float) -> None:
         time.sleep(0)
 
 
+# One probe for every driver the engine opens (it reopens the driver on each settings change).
+_NETWORK = NetworkProbe()
+
 class FpgaDriver(OutputDriver):
     def __init__(self, settings: OutputSettings, options: FpgaOptions | None = None,
-                 socket_factory: Callable[[], socket.socket] | None = None):
+                 socket_factory: Callable[[], socket.socket] | None = None, network: NetworkProbe | None = None):
         self.settings = settings.model_copy(deep=True)
+        self._network = network or _NETWORK
         self.options = options or FpgaOptions.from_env()
         self._socket_factory = socket_factory or (lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
         self._brightness = min(max(settings.brightness, 0.0), 1.0)
@@ -344,7 +349,12 @@ class FpgaDriver(OutputDriver):
             "pack_ms": round(s.pack_ms, 2), "send_ms": round(s.send_ms, 2),
             "min_gap_us": round(self._gap_min * 1e6) if self._gap_min is not None else None,
             "brightness": self._brightness,
+            "network": self._network.status(), "need_mbps": self._need_mbps(), "frame_rate": self._fps,
         }
+
+    def _need_mbps(self) -> float | None:
+        live = self._live or self._target
+        return round(needed_mbps(live.schedule.frame_bytes, self._fps), 1) if live is not None else None
 
     # ---- status pieces
     def _answering(self, now: float) -> bool:

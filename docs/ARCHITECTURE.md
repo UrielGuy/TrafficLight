@@ -314,7 +314,12 @@ leaving out what cannot be known yet (no answer: nothing about the card's
 firmware). Levels: `error` = the sign or the sound cannot work, `warning` =
 works but something is off, `info` = a neutral note or hint (driver set to
 none, panel wiring still the default), `ok`. Ids, in this order:
-`output.driver` (off / on / cannot start), `output.settings` (a card address
+`output.driver` (off / on / cannot start), `output.network` (this computer's
+port on the sign's network 10.75.0.0/16, from `output/network.py` via psutil:
+none, netmask narrower than /16, no link, a host address in the cards' range,
+two ports on the network, the route to the cards leaving through another
+adapter, a link too slow for the frame rate; the driver status carries it as
+`network`, `need_mbps` and `frame_rate`), `output.settings` (a card address
 that does not resolve, wiring values that do not fit), `output.access` (the UDP
 socket cannot be opened, or the announce port 5776 is taken by another
 server), `output.send` (sending fails: usually the port has no address in the

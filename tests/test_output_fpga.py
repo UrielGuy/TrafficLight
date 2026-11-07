@@ -18,6 +18,7 @@ from trafficlight.output.hub75 import protocol as P
 from trafficlight.output.hub75.model import DEFAULT_UID
 from trafficlight.output.hub75.pack import Packer
 from trafficlight.output.mapping import Mapper
+from trafficlight.output.network import NetworkProbe, Port
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +44,9 @@ def card():
     c.close()
 
 
+
+GOOD_NETWORK = NetworkProbe(lambda: [Port("eth-sign", "10.75.0.1", 16, True, 1000)], lambda dest: "10.75.0.1")
+
 @pytest.fixture
 def make(card):
     drivers = []
@@ -50,7 +54,7 @@ def make(card):
     def make(fps=60, brightness=1.0, gamma=2.2, address="127.0.0.1", port=None, options=None, factory=None, **kw):
         s = OutputSettings(driver="fpga", card_address=address, card_port=port or card.port,
                            brightness=brightness, gamma=gamma, **kw)
-        d = FpgaDriver(s, options or opts(), factory)
+        d = FpgaDriver(s, options or opts(), factory, network=GOOD_NETWORK)
         d.set_frame_rate(fps)
         d.open()
         d.set_brightness(brightness)
@@ -608,7 +612,7 @@ def test_checks_when_everything_works(card, make):
     d.send(picture())
     wait_for(lambda: d.status()["schedule"] and d.status()["card"]["schedule_id"] == card.active.schedule_id)
     c = checks_of(d, panel_order=[1, 0, 2, 3, 4, 5])
-    assert list(c) == ["output.driver", "output.receiver", "output.firmware", "output.schedule", "output.packets",
+    assert list(c) == ["output.driver", "output.network", "output.receiver", "output.firmware", "output.schedule", "output.packets",
                        "output.timing", "output.wiring", "audio.device"]
     assert all(v["level"] == "ok" for v in c.values())
     assert c["output.receiver"]["title"] == "LED card found"
