@@ -225,3 +225,10 @@ input[type=url] { font: inherit; color: var(--text); background: var(--surface2)
   .wiring-row { gap: 8px; }
   .wiring-light { padding: 4px; }
 }
+
+/* Sets: download / upload bundles */
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.section-head h2 { margin: 0; }
+.bundle-bar { margin: 4px 0 12px; }
+.section-head .bundle-bar { margin: 0; }
+.bundle-result { display: grid; gap: 8px; }

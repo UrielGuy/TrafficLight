@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, renderUrl } from '../api/client';
 import type { SetSummary } from '../api/types';
+import { BundleBar, DownloadSet } from '../components/Bundles';
 import { Dialog, Empty, Toggle } from '../components/ui';
 import { patchSettings, setsRes, useAppState, useSets, useSettings } from '../state/app';
 import { confirmDialog } from '../state/confirm';
@@ -94,6 +95,7 @@ export default function SetsPage() {
         <button className="primary" onClick={() => setDialog({ kind: 'create' })}>New set</button>
       </div>
       <p className="muted small">Sets play in this order. Drag the handle to reorder.</p>
+      <BundleBar />
       {sets && sets.length === 0 && <Empty>No sets yet.</Empty>}
       <ul className="plain-list set-list">
         {order.map((s) => (
@@ -110,6 +112,7 @@ export default function SetsPage() {
                 <button onClick={() => patchSettings({ schedule: { default_set: defaultId === s.id ? null : s.id } })}>{defaultId === s.id ? 'Clear default' : 'Make default'}</button>
                 <button onClick={() => setDialog({ kind: 'rename', set: s })}>Rename</button>
                 <button onClick={() => duplicate(s)}>Duplicate</button>
+                <DownloadSet id={s.id} />
                 <button className="danger-text" onClick={() => remove(s)}>Delete</button>
               </div>
               <label className="inline-field"><Toggle label="In rotation" checked={s.in_rotation} onChange={(v) => toggleRotation(s, v)} /> In rotation</label>

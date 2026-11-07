@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { BundleBar, DownloadSet } from '../components/Bundles';
 import SignPreview from '../components/SignPreview';
 import { Empty, Field, Slider, Toggle } from '../components/ui';
 import { AttentionList } from '../components/SetupChecks';
@@ -55,6 +57,7 @@ export default function Dashboard() {
   const state = useAppState();
   const sets = useSets();
   const settings = useSettings();
+  const nav = useNavigate();
 
   useEffect(() => {
     void settingsRes.refresh();
@@ -111,8 +114,11 @@ export default function Dashboard() {
       </section>
 
       <section className="card">
-        <h2>Sets</h2>
-        {sets && sets.length === 0 && <Empty>No sets yet. Create one on the Sets page.</Empty>}
+        <div className="section-head">
+          <h2>Sets</h2>
+          <BundleBar />
+        </div>
+        {sets && sets.length === 0 && <Empty>No sets yet. Create one on the Sets page, or upload a zip from another TrafficLight.</Empty>}
         <ul className="plain-list">
           {sets?.map((s) => (
             <li key={s.id} className="list-row">
@@ -120,7 +126,11 @@ export default function Dashboard() {
                 <div className="name">{s.name}{state?.now.set_id === s.id && <span className="badge">playing</span>}{settings?.schedule.default_set === s.id && <span className="badge">default</span>}</div>
                 <div className="small muted">{formatTime(s.duration)} · {s.bpm} bpm{s.in_rotation ? '' : ' · not in rotation'}</div>
               </div>
-              <button onClick={() => attempt(() => api.showSet(s.id))}>Show now</button>
+              <div className="row">
+                <button onClick={() => nav(`/editor/${s.id}`)}>Edit</button>
+                <button onClick={() => attempt(() => api.showSet(s.id))}>Show now</button>
+                <DownloadSet id={s.id} />
+              </div>
             </li>
           ))}
         </ul>

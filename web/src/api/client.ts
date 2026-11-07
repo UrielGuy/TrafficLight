@@ -1,7 +1,7 @@
 // Typed wrappers for every REST route in docs/ARCHITECTURE.md ("HTTP API").
 // Failures throw ApiError whose message is the server's `detail`.
 import type {
-  AudioDevice, Catalog, MediaEdit, MediaImport, MediaItem, MediaProbe, NetInterface, NewSet, Peaks, Problem, SetData, SetSummary,
+  AudioDevice, BundleKind, BundleResult, Catalog, MediaEdit, MediaImport, MediaItem, MediaProbe, NetInterface, NewSet, Peaks, Problem, SetData, SetSummary,
   Settings, SettingsPatch, ShowTarget, State, TestPattern,
 } from './types';
 
@@ -112,11 +112,11 @@ export const mediaSourceUrl = (id: string) => `/api/media/${enc(id)}/source`;
 export const renderUrl = (setId: string, t = 0, rev?: number) =>
   `/api/render.png?set=${enc(setId)}&t=${t}${rev ? `&v=${rev}` : ''}`;
 
-/** Like api.uploadMedia but reports progress (fetch cannot). */
-export function uploadMediaWithProgress(file: File, onProgress: (fraction: number) => void): Promise<MediaItem> {
+/** A POST of form data that reports the upload's progress (fetch cannot). */
+function postWithProgress<T>(url: string, fd: FormData, onProgress: (fraction: number) => void): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/media');
+    xhr.open('POST', url);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onerror = () => reject(new ApiError(0, 'Cannot reach the server'));
     xhr.onload = () => {
@@ -126,11 +126,29 @@ export function uploadMediaWithProgress(file: File, onProgress: (fraction: numbe
       } catch {
         /* not JSON */
       }
-      if (xhr.status >= 200 && xhr.status < 300) resolve(body as MediaItem);
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body as T);
       else reject(new ApiError(xhr.status, detailText(body?.detail, `${xhr.status} ${xhr.statusText}`), body?.detail));
     };
-    const fd = new FormData();
-    fd.append('file', file);
     xhr.send(fd);
   });
+}
+
+/** Like api.uploadMedia but reports progress. */
+export function uploadMediaWithProgress(file: File, onProgress: (fraction: number) => void): Promise<MediaItem> {
+  const fd = new FormData();
+  fd.append('file', file);
+  return postWithProgress<MediaItem>('/api/media', fd, onProgress);
+}
+
+// ---- bundles: sets and media in one zip, to move them to another TrafficLight
+/** A download link (the browser saves the zip; it is made while it downloads). */
+export const bundleUrl = (b: BundleKind) =>
+  b.kind === 'sets' ? `/api/bundle?${b.ids.map((i) => `set=${enc(i)}`).join('&')}` : `/api/bundle?kind=${b.kind}`;
+
+/** `replace`: sets and media already here are updated from the bundle; else kept (sets: the bundle's next to them). */
+export function uploadBundle(file: File, replace: boolean, onProgress: (fraction: number) => void): Promise<BundleResult> {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('replace', replace ? 'true' : 'false');
+  return postWithProgress<BundleResult>('/api/bundle', fd, onProgress);
 }

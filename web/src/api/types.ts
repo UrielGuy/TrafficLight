@@ -261,3 +261,23 @@ export type EditorClientMessage =
   | { type: 'seek'; t: number }
   | { type: 'loop'; on: boolean; from?: number; to?: number }
   | { type: 'live'; on: boolean };
+
+// ---- bundles (GET / POST /api/bundle)
+/** sets = the chosen ones, all = every set, both with the media they use; everything = every set, all the
+ * media and the show settings (schedule, light colours, off style; not this computer's output or sound). */
+export type BundleKind = { kind: 'sets'; ids: string[] } | { kind: 'all' } | { kind: 'everything' };
+
+/** What an upload did, by name. */
+export interface BundleResult {
+  sets_added: string[];
+  sets_replaced: string[];
+  /** Kept both: the bundle's set under a new id, named "… (imported)". */
+  sets_copied: string[];
+  sets_unchanged: string[];
+  media_added: string[];
+  media_updated: string[];
+  media_unchanged: string[];
+  /** "name: why" */
+  media_failed: string[];
+  settings: boolean;
+}

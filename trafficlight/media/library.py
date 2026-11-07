@@ -37,7 +37,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import BinaryIO, Callable, Optional
 from urllib.parse import urlparse
 
 from .. import config
@@ -52,6 +52,8 @@ _SWEEP_SECONDS = 5.0
 _PROGRESS_EVERY = 0.5        # seconds between progress reports that bump rev (clients refetch on a bump)
 _VDIR = re.compile(r"^v(\d+)$")
 _PREPARED = ("proxy.mp4", "proxy.png", "audio.wav", "peaks.json", "thumb.jpg")
+_ORIGINAL = re.compile(r"^original\.[a-z0-9]{1,6}$")
+_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _default_fetcher():
@@ -355,6 +357,84 @@ class MediaLibrary:
             except OSError:
                 log.exception("cannot mark %s as deleted", d)
         self._discard(d)
+
+    # ------------------------------------------------------------------ bundles (trafficlight/bundle.py)
+    def bundle_files(self, media_id: str) -> Optional[tuple[MediaItem, list[tuple[str, Path]]]]:
+        """What a bundle carries of an item: the item and (name in its folder, path) of the original,
+        source.mp4 and the prepared files of the current version, so the other end has it ready
+        without converting anything. None while there is no original yet (a link still downloading).
+        KeyError if unknown."""
+        with self._lock:
+            m = self._items.get(media_id)
+            if m is None:
+                raise KeyError(media_id)
+            m = m.model_copy(deep=True)
+            orig = self._originals.get(media_id)
+        if orig is None or not orig.is_file():
+            return None
+        d = self.root / media_id
+        files = [(orig.name, orig)]
+        if (d / "source.mp4").is_file():
+            files.append(("source.mp4", d / "source.mp4"))
+        if m.version > 0:
+            vdir = d / f"v{m.version}"
+            files += [(f"v{m.version}/{f}", vdir / f) for f in _PREPARED if (vdir / f).is_file()]
+        return m, files
+
+    def receive(self, meta: dict, files: list[tuple[str, Callable[[], BinaryIO]]]) -> MediaItem:
+        """An item from a bundle, under its own id: `meta` as bundle_files gave it, `files` (name in the
+        item's folder, opener of its content). Prepared files are taken as they are, so the item is
+        ready at once; without them it is prepared here from the original. ValueError for an id that
+        is taken (also by a deleted item whose files are not gone yet), a missing original or a name
+        that does not belong in an item's folder."""
+        meta = dict(meta)
+        meta.pop("import", None)
+        m = MediaItem.model_validate(meta)
+        if not _ID.match(m.id):
+            raise ValueError(f"Invalid media id {m.id!r}")
+        allowed = {f"v{m.version}/{f}" for f in _PREPARED} | {"source.mp4"}
+        originals = [n for n, _ in files if _ORIGINAL.match(n)]
+        if len(originals) != 1:
+            raise ValueError(f"{m.name}: the bundle has no original")
+        for name, _ in files:
+            if name not in allowed and not _ORIGINAL.match(name):
+                raise ValueError(f"{m.name}: unexpected file {name!r} in the bundle")
+        d = self.root / m.id
+        with self._lock:
+            if m.id in self._items or d.exists():
+                raise ValueError(f"{m.name} is here already")
+            d.mkdir(parents=True)      # under the lock: two imports of one id never share the folder
+        # meta.json comes last: a folder without it is discarded at start-up, so an import that
+        # breaks off half-way leaves nothing behind.
+        try:
+            for name, opener in files:
+                dest = d / name
+                dest.parent.mkdir(exist_ok=True)
+                with opener() as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out, 1 << 20)
+        except BaseException:
+            self._discard(d)
+            raise
+        vdir = d / f"v{m.version}"
+        if m.version > 0 and not any((vdir / f).is_file() for f in _PREPARED):
+            m.version = 0
+        if m.version == 0 and m.status == "ready":
+            m.status = "processing"
+        redo = m.status == "processing"
+        if redo:
+            m.error, m.progress, m.stage = None, 0.0, "waiting"
+        with self._lock:
+            self._items[m.id] = m
+            self._originals[m.id] = d / originals[0]
+            self._jobs[m.id] = 0
+            if m.status == "ready":
+                self._good_edit[m.id] = m.edit
+            self._bump()
+            out = m.model_copy(deep=True)
+        self._save(m.id)
+        if redo:
+            self._queue.put(m.id)
+        return out
 
     def close(self) -> None:
         with self._lock:
