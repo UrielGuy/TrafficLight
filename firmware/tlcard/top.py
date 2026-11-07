@@ -32,7 +32,7 @@ class CRG(LiteXModule):
 
 class TLCard(LiteXModule):
     def __init__(self, platform, sys_clk_freq=C.DEFAULT_TICK_HZ, eth_phy=0, ip=C.CARD_IP, mac=C.CARD_MAC,
-                 pattern=False, fw_build=0, tx_delay=2e-9, rx_delay=2e-9, sdram_cl=2):
+                 pattern=False, fw_build=0, tx_delay=0.0, rx_delay=2e-9, sdram_cl=2):
         sys_clk_freq = int(sys_clk_freq)
         self.crg = CRG(platform, sys_clk_freq)
 

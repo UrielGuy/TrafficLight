@@ -35,14 +35,14 @@ $P firmware/build.py mdio                 # Test D: PHY id scan on the LED
 $P firmware/build.py memtest              # Test E: 8 MiB SDRAM test on the LED
 ```
 
-Options: `--eth-phy 0|1` (which RJ45), `--ip`, `--mac`, `--sys-clk-freq` (= `tick_hz`, default 50e6),
-`--sdram-cl`, `--tx-delay`/`--rx-delay` (RGMII delays in the FPGA, 2 ns each by default),
+Options: `--eth-phy 0|1` (which RJ45; the tested card uses 1), `--ip`, `--mac`, `--sys-clk-freq` (= `tick_hz`, default 50e6),
+`--sdram-cl`, `--tx-delay`/`--rx-delay` (RGMII delays in the FPGA; 0 and 2 ns by default, the values that work on V8.2),
 `--seed`, `--timingstrict`, `--out` (default `~/tools/tlcard-build`, keep bitstreams out of git),
 `--no-run` (write Verilog and scripts only). Load with SRAM only until it works:
 `openFPGALoader -c dirtyJtag -m <file>.bit` (docs/FPGA-BRINGUP.md section 5).
 
 LED codes: **main** off until the SDRAM init is through, 1 Hz blink until a frame is shown,
-then steady. **mdio**: per PHY address whose id is 0x001CC916, (address + 1) blinks at 2 Hz,
+then steady. **mdio**: per PHY address with a Realtek id (0x001C in register 2; the V8.2 card's read 0x001CC858), (address + 1) blinks at 2 Hz,
 1.5 s pause; 3 s between rounds; a 5 Hz blink means no PHY answered. **memtest**: steady while
 running, 0.5 Hz = pass, 5 Hz = fail.
 

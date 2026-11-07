@@ -3,7 +3,7 @@ on the user LED (T6, active low), the only user output besides the connectors.
 
 blink    Test B: the LED blinks at 1 Hz from the 25 MHz clock.
 mdio     Test D: PHY addresses 0..31 are read on MDIO; for every address whose id registers
-         say RTL8211F (0x001CC916) the LED blinks (address + 1) times at 2 Hz, then pauses
+         say Realtek (0x001C in register 2; V8.2's PHYs read 0x001CC858) the LED blinks (address + 1) times at 2 Hz, then pauses
          1.5 s; 3 s between rounds. A steady 5 Hz blink means no PHY answered.
 memtest  Test E: the 8 MiB are written and read back with two patterns; 0.5 Hz blink = pass,
          5 Hz = fail, steady on = running, off = the SDRAM init never finished.
@@ -21,7 +21,7 @@ from litedram.phy import GENSDRPHY
 from . import constants as C
 from .sdram import SdramAccess, SdramCore
 
-PHY_ID = 0x001CC916
+REALTEK_ID_HI = 0x001C
 
 
 class Blink(Module):
@@ -106,7 +106,7 @@ class MdioScan(Module):
         fsm.act("READ_LO", mdio.start.eq(1), mdio.reg.eq(3), NextState("READ_LO_WAIT"))
         fsm.act("READ_LO_WAIT", mdio.reg.eq(3),
             If(mdio.done,
-                If(Cat(mdio.data, id_hi) == PHY_ID, NextValue(found, found | (1 << addr))),
+                If(id_hi == REALTEK_ID_HI, NextValue(found, found | (1 << addr))),
                 NextValue(addr, addr + 1),
                 If(addr == 31, NextValue(show, 0), NextState("SHOW")).Else(NextState("READ_HI")),
             ),

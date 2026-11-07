@@ -36,7 +36,8 @@ def main():
     ap.add_argument("--mac", default=f"{C.CARD_MAC:012x}", help="the card's MAC, 12 hex digits")
     ap.add_argument("--sys-clk-freq", type=float, default=C.DEFAULT_TICK_HZ, help="tick_hz: the system clock (also LiteDRAM's)")
     ap.add_argument("--sdram-cl", type=int, default=2, help="SDRAM CAS latency")
-    ap.add_argument("--tx-delay", type=float, default=2e-9, help="RGMII TX clock delay in the FPGA (s)")
+    ap.add_argument("--tx-delay", type=float, default=0.0,
+                    help="RGMII TX clock delay in the FPGA (s); 0 on V8.2: the PHY adds its own (2 ns here: no frames)")
     ap.add_argument("--rx-delay", type=float, default=2e-9, help="RGMII RX clock delay in the FPGA (s)")
     ap.add_argument("--pattern", action="store_true", help="main: show the built-in test picture until a schedule arrives")
     ap.add_argument("--seed", type=int, default=1, help="nextpnr seed")
