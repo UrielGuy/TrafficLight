@@ -36,21 +36,32 @@ do it at home, not on the playa.
 1. **Raspberry Pi Imager**: Raspberry Pi OS Lite (64-bit). In its OS customisation set a user name
    and password, your **home Wi-Fi**, and under Services **enable SSH** (paste your public key,
    `~/.ssh/id_ed25519.pub` in WSL, or allow the password).
-2. Boot the Pi and wait a minute. It joins the Wi-Fi; `ssh you@raspberrypi.local` should work
-   (or use the address your router shows). Connect over Wi-Fi rather than a cable: the Pi's
-   network socket becomes the LED card's.
-3. From the PC (WSL or Git Bash, in the repo), with the names you like:
+2. Boot the Pi and wait a minute or two (the first boot resizes the card and restarts). It joins
+   the Wi-Fi as `<name>.local`; WSL cannot resolve `.local` names, so take the address from
+   `ping <name>.local` in a Windows prompt or from the router. Connect over Wi-Fi rather than a
+   cable: the Pi's network socket becomes the LED card's.
+3. Once, from WSL: install your key, and let your user run `sudo` without a password (Raspberry Pi
+   OS 13 "Trixie" asks for it, and the installer runs unattended over ssh):
 
    ```
-   scripts/update_pi.sh you@raspberrypi.local --hostname trafficlight \
-       --timezone America/Los_Angeles --hotspot TrafficLight
+   ssh-copy-id you@192.168.x.y
+   ssh -t you@192.168.x.y "echo 'you ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/010-trafficlight-nopasswd >/dev/null && sudo chmod 440 /etc/sudoers.d/010-trafficlight-nopasswd"
+   ```
+
+   (`you`: the Pi's user name, in both places.) Without this, run step 4 in a terminal and type
+   the sudo password when asked.
+4. From the PC (WSL or Git Bash, in the repo), with the names you like:
+
+   ```
+   scripts/update_pi.sh you@192.168.x.y --timezone America/Los_Angeles --hotspot TrafficLight
    ```
 
    It asks for the hotspot's password at the start, then builds the UI, copies everything,
-   installs, and prints where the UI is: `http://trafficlight.local:8080`.
-4. Plug the LED card into the Pi's network socket. **Settings → Setup** in the UI should show the
+   installs (about 4 minutes on a Pi 4, mostly downloads), and prints where the UI is:
+   `http://<name>.local:8080`. `--hostname NAME` renames the Pi if Imager did not.
+5. Plug the LED card into the Pi's network socket. **Settings → Setup** in the UI should show the
    network port, then "Found card 10.75.c.d".
-5. Move the show: on the PC's UI, Dashboard → **Download everything**; on the Pi's UI, **Upload…**
+6. Move the show: on the PC's UI, Dashboard → **Download everything**; on the Pi's UI, **Upload…**
    that zip (sets, media and show settings).
 
 What `scripts/install_pi.sh` sets up on the Pi (all safe to repeat; updates keep it):

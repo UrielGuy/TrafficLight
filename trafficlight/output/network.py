@@ -114,14 +114,20 @@ def problem(net: dict[str, Any], need_mbps: Optional[float], fps: float) -> tupl
     """(level, title, detail, fix) of the output.network check from NetworkProbe.status()."""
     fix_addr = ("Give the network port the LED card is plugged into the address 10.75.0.1 with netmask "
                 "255.255.0.0 (no gateway). Windows, as administrator: netsh interface ip set address "
-                "\"<adapter>\" static 10.75.0.1 255.255.0.0. On the Pi: see docs/HARDWARE.md section 4.")
+                "\"<adapter>\" static 10.75.0.1 255.255.0.0. On the Pi: scripts/install_pi.sh sets it up "
+                "(docs/HARDWARE.md section 4).")
     if net.get("ports") is None:
         return ("warning", "Cannot read the network adapters", net.get("error") or "unknown error",
                 "Install the Python package psutil (requirements.txt).")
     ports = [Port(**{k: p[k] for k in ("name", "address", "prefix", "up", "speed_mbps")}) for p in net["ports"]]
     if not ports:
+        # Linux (NetworkManager) removes a port's address while it has no link, so on the Pi a set-up
+        # port whose cable is out looks exactly like no set-up at all.
         return ("error", "No network port is set up for the LED card",
-                "No adapter has an address in 10.75.0.0/16, the sign's network, so nothing reaches the card.", fix_addr)
+                "No adapter has an address in 10.75.0.0/16, the sign's network, so nothing reaches the card. "
+                "On Linux a port only has its address while it has a link: if the card's cable is unplugged "
+                "or the card has no power, that comes first.",
+                "If the cable is in and the card is on: " + fix_addr[0].lower() + fix_addr[1:])
     live = [p for p in ports if p.up is not False]
     if not live:
         names = ", ".join(f"{p.name} ({p.address})" for p in ports)
