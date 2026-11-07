@@ -608,6 +608,33 @@ compare the status fields.
 The host never needs to know the card's timing except through the status
 fields. A frame sent for the wrong schedule is rejected, never shown.
 
+### Using the custom firmware
+
+The driver is `trafficlight/output/fpga.py` (`FpgaDriver`). Plug the PC's
+network port into the card, give that port 10.75.0.1/24, check
+`ping 10.75.0.2`, then choose **Custom firmware** in Settings → LED output
+(the card address field defaults to the firmware's 10.75.0.2; the UI sets
+gamma to 2.2 when switching, as this card is linear). The setup checks list
+whether the card answers, its firmware version, the schedule it runs and
+whether it loses packets. Notes on what the driver does beyond the list above:
+
+* Frame ids start after the card's `frame_id_rx` from the first status, so a
+  restarted program is never taken for a stale sender.
+* The frame rate the engine sets is the card's pass rate: a change builds
+  and uploads a new schedule (new id). If the configured depth does not fit
+  that rate, it falls back to fewer planes (down to 8) and warns.
+* Brightness and gamma change only the packer's LUT; the picture is packed
+  again and sent, the schedule stays.
+* A frame equal (in packed bytes) to the last one sent is not sent; with
+  dithering on, a still picture keeps changing and keeps flowing.
+* A frame the card does not show 0.3 s after sending (lost chunk or commit,
+  or a card restart) is sent again, at most once a second.
+* Knobs, in the environment variable `TRAFFICLIGHT_FPGA`, e.g.
+  `planes=11,dither=off,burst=4,gap_us=300`: `planes`, `split`, `clk_div`,
+  `blank_before`, `lat_ticks`, `blank_after` (ticks), `min_oe_ns`, `dither`,
+  `pace`, `burst`, `gap_us`, `chunk_bytes`, `broadcast` (addresses asked,
+  separated by `/`, when the card does not answer at its own address).
+
 ## 10. Limits
 
 | | |

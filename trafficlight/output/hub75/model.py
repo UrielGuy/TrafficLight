@@ -16,7 +16,7 @@ import numpy as np
 from ... import config
 from . import protocol as P
 from .pack import unpack_bits
-from .schedule import BUFFER_BYTES, BYTES_PER_COLUMN, CardLimits, PORTS, Schedule, ScheduleError
+from .schedule import BUFFER_BYTES, BYTES_PER_COLUMN, CardLimits, PORTS, Schedule, ScheduleError, ScheduleParams
 
 BUFFERS = 3
 FW_VERSION = (0, 1)
@@ -148,7 +148,8 @@ class Card:
 
     def _schedule(self, pkt: P.SchedulePacket) -> None:
         try:
-            s = Schedule.from_bytes(pkt.table, self.limits)
+            # The frame rate is the host's business (it is not on the wire): a pass of any length is accepted.
+            s = Schedule.from_bytes(pkt.table, self.limits, ScheduleParams(fps=0))
         except ScheduleError as e:
             self._error({"tick": P.ERR_SCHED_TICK, "entry": P.ERR_SCHED_ENTRY}.get(e.kind, P.ERR_SCHED_LIMITS),
                         "sched_rejected")

@@ -12,6 +12,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .output import wiring
+from .output.hub75 import protocol
 
 Target = Literal["face0", "face1", "face2", "all", "audio"]
 FACE_TARGETS = ("face0", "face1", "face2")
@@ -78,15 +79,26 @@ class SetSummary(BaseModel):
 
 # ---------------------------------------------------------------- settings
 class OutputSettings(BaseModel):
-    driver: Literal["colorlight", "none"] = "none"
-    interface: Optional[str] = None    # network interface id from /api/output/interfaces
+    driver: Literal["colorlight", "fpga", "none"] = "none"   # colorlight = stock firmware (raw Ethernet); fpga = our firmware (UDP)
+    interface: Optional[str] = None    # network interface id from /api/output/interfaces (colorlight only)
+    card_address: str = protocol.CARD_IP   # fpga: where the card is (docs/FIRMWARE.md section 6.1)
+    card_port: int = Field(protocol.PORT, ge=1, le=65535)
     brightness: float = 0.5            # 0..1
-    gamma: float = 1.0                 # applied in software before sending (1.0 = leave to the receiver card)
+    gamma: float = 1.0                 # applied in software before sending. colorlight: 1.0 = leave to the receiver card;
+                                       # fpga: the card is linear, so this is the gamma (2.2)
     rotate180: bool = False            # whole sign upside down
     panel_order: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5])   # panel (top..bottom) -> the card's band it is on
                                        # = connector number - 1 (0..PORTS-1, all different); see output/wiring.py
     panel_flip: list[bool] = Field(default_factory=lambda: [False] * 6)          # panel mounted rotated 180 degrees
     color_order: Literal["rgb", "rbg", "grb", "gbr", "brg", "bgr"] = "rgb"   # byte order on the wire; this card probably needs "bgr" (docs/HARDWARE.md)
+
+    @field_validator("card_address")
+    @classmethod
+    def _address_is_a_host(cls, v: str) -> str:
+        v = v.strip()
+        if not v or any(c.isspace() or c in "/:" for c in v):
+            raise ValueError("card_address is a host name or an IPv4 address such as 10.75.0.2")
+        return v
 
     @field_validator("panel_order")
     @classmethod

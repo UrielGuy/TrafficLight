@@ -279,3 +279,14 @@ def test_chunk_beyond_the_buffer_is_dropped(sched):
     card = ready_card(sched)
     card.receive(P.build_frame_chunk(1, 0, 400_000, bytes(64)))
     assert status(card).chunks_dropped == 1 and status(card).last_error == P.ERR_CHUNK_RANGE
+
+
+def test_the_card_takes_a_pass_of_any_length():
+    # The frame rate is not on the wire: a 30 fps table is as good as a 60 fps one.
+    card = Card()
+    slow = build(ScheduleParams(fps=30))
+    assert status_of_upload(card, slow).sched_active_id == slow.schedule_id
+
+
+def status_of_upload(card, sched):
+    return P.parse(card.receive(P.build_schedule(sched.to_bytes(), 3)))

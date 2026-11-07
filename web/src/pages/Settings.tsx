@@ -68,20 +68,30 @@ function OutputCard({ s, ifaces }: { s: Settings; ifaces: NetInterface[] | null 
   const o = s.output;
   const [brightness, setBrightness] = useDebouncedValue(o.brightness, (v) => void patchSettings({ output: { brightness: v } }));
   const [gamma, setGamma] = useDebouncedValue(o.gamma, (v) => void patchSettings({ output: { gamma: v } }));
+  const [address, setAddress] = useDebouncedValue(o.card_address, (v) => void patchSettings({ output: { card_address: v.trim() } }), 600);
   const known = ifaces?.some((i) => i.id === o.interface) ?? true;
   return (
     <section className="card">
       <h2>LED output</h2>
       <Field label="Driver">
-        <Segmented value={o.driver} options={[{ value: 'colorlight', label: 'Colorlight' }, { value: 'none', label: 'None' }]} onChange={(v) => void patchSettings({ output: { driver: v } })} />
+        <Segmented value={o.driver} options={[{ value: 'colorlight', label: 'Colorlight' }, { value: 'fpga', label: 'Custom firmware' }, { value: 'none', label: 'None' }]}
+          // The custom card is linear, so its gamma setting is the gamma; the stock card applies its own (1.0).
+          onChange={(v) => void patchSettings({ output: v === 'fpga' && o.gamma === 1 ? { driver: v, gamma: 2.2 } : { driver: v } })} />
       </Field>
-      <Field label="Network interface" hint="The Ethernet port the Colorlight card is plugged into.">
-        <select value={o.interface ?? ''} onChange={(e) => void patchSettings({ output: { interface: e.target.value || null } })}>
-          <option value="">Choose…</option>
-          {!known && o.interface && <option value={o.interface}>{o.interface} (not found)</option>}
-          {ifaces?.map((i) => <option key={i.id} value={i.id}>{i.name}{i.description ? ` – ${i.description}` : ''}{i.up ? '' : ' (down)'}</option>)}
-        </select>
-      </Field>
+      {o.driver === 'colorlight' && (
+        <Field label="Network interface" hint="The Ethernet port the Colorlight card is plugged into.">
+          <select value={o.interface ?? ''} onChange={(e) => void patchSettings({ output: { interface: e.target.value || null } })}>
+            <option value="">Choose…</option>
+            {!known && o.interface && <option value={o.interface}>{o.interface} (not found)</option>}
+            {ifaces?.map((i) => <option key={i.id} value={i.id}>{i.name}{i.description ? ` – ${i.description}` : ''}{i.up ? '' : ' (down)'}</option>)}
+          </select>
+        </Field>
+      )}
+      {o.driver === 'fpga' && (
+        <Field label="Card address" hint="Where the card is on the network (10.75.0.2 unless the firmware was built otherwise). This computer's port for the card needs 10.75.0.1, mask 255.255.255.0.">
+          <input type="text" value={address} onChange={(e) => setAddress(e.target.value)} spellCheck={false} aria-label="Card address" />
+        </Field>
+      )}
       <Field label="Brightness"><Slider label="Brightness" value={brightness} min={0} max={1} step={0.01} onChange={setBrightness} format={(v) => `${Math.round(v * 100)}%`} /></Field>
       <Field label="Gamma"><Slider label="Gamma" value={gamma} min={0.5} max={3} step={0.05} onChange={setGamma} format={(v) => v.toFixed(2)} /></Field>
       <Field label="Rotate 180°" hint="Turns the whole picture over. Panel wiring (below) switches it off and handles upside-down panels itself."><Toggle label="Rotate 180 degrees" checked={o.rotate180} onChange={(v) => void patchSettings({ output: { rotate180: v } })} /></Field>

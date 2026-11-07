@@ -39,7 +39,9 @@ def _output_checks(o: OutputSettings, st: dict[str, Any]) -> list[dict[str, Any]
     if o.driver == "none":
         return [check("output.driver", "info", "LED output is off",
                       "The output driver is set to None: nothing is sent to the sign. The preview still works.",
-                      "To drive the sign, choose Colorlight in Settings → LED output → Driver.")]
+                      "To drive the sign, choose Colorlight or Custom firmware in Settings → LED output → Driver.")]
+    if o.driver == "fpga":
+        return _fpga_checks(o, st)
     found: dict[str, dict[str, Any]] = {}
     for p in st.get("problems") or []:
         found.setdefault(p["id"], p)
@@ -110,6 +112,72 @@ def _output_checks(o: OutputSettings, st: dict[str, Any]) -> list[dict[str, Any]
         return out
     out.append(check("output.card_size", "ok", f"Receiver card set up for {config.W}x{config.CARD_H}",
                      f"{config.PORTS} modules of {config.PANEL_W}x{config.PANEL_H}, J1..J{config.PORTS} from the top."))
+    out.append(_wiring_check(o))
+    return out
+
+
+def _fpga_checks(o: OutputSettings, st: dict[str, Any]) -> list[dict[str, Any]]:
+    """The custom firmware (UDP): no interface, no raw access, no link state. The card either answers or not."""
+    found: dict[str, dict[str, Any]] = {}
+    for p in st.get("problems") or []:
+        found.setdefault(p["id"], p)
+    out: list[dict[str, Any]] = []
+    opened = bool(st.get("open"))
+    if "output.driver" in found:
+        out.append(found["output.driver"])
+    elif opened:
+        fps = st.get("sent_fps")
+        if st.get("holding"):
+            detail = "Showing a still picture: the card keeps it, nothing is sent until it changes."
+        elif fps:
+            detail = f"Sending {fps:.0f} frames per second."
+        else:
+            detail = "Open, waiting for frames."
+        out.append(check("output.driver", "ok", "LED output: custom firmware", detail))
+    elif not found:
+        error = st.get("error")
+        if error and error != "not started":
+            out.append(check("output.driver", "error", "The LED output is not working", error))
+        else:
+            out.append(check("output.driver", "info", "Starting the LED output", "The driver is being opened."))
+    for cid in ("output.settings", "output.access"):
+        if cid in found:
+            out.append(found[cid])
+    if not opened:
+        return out
+    card = st.get("card")
+    if "output.receiver" in found and found["output.receiver"]["level"] == "error":
+        out.append(found["output.receiver"])
+        return out
+    if card is None:
+        out.append(check("output.receiver", "info", "Looking for the LED card",
+                         f"Asking {st.get('address')}; a card with the custom firmware answers within a second."))
+        return out
+    if "output.receiver" in found:        # answering from another address than the setting
+        out.append(found["output.receiver"])
+    else:
+        out.append(check("output.receiver", "ok", "LED card found",
+                         f"Custom firmware {card['firmware']} at {st.get('address')}, up for {card['uptime_s']:.0f} s."))
+    if "output.firmware" in found:
+        out.append(found["output.firmware"])
+        return out
+    out.append(check("output.firmware", "ok", f"Firmware {card['firmware']} fits this sign",
+                     f"{config.PORTS} connectors of {config.PANEL_W}x{config.PANEL_H} panels."))
+    if "output.schedule" in found:
+        out.append(found["output.schedule"])
+    elif st.get("schedule"):
+        sc = st["schedule"]
+        out.append(check("output.schedule", "ok", f"Refresh schedule: {sc['planes']} bits at {sc['frame_hz']:g} Hz",
+                         f"Bright pixels are refreshed {sc['subframe_hz']} times a second; the shortest light pulse is "
+                         f"{sc['lsb_ns']} ns, the panels are lit {round(100 * sc['duty'])} % of the time at full white."))
+    else:
+        out.append(check("output.schedule", "info", "Waiting for the refresh schedule",
+                         "It is built from what the card reports and sent to it."))
+    if "output.send" in found:
+        out.append(found["output.send"])
+    for cid, ok_title, ok_detail in (("output.packets", "No packets lost", "Every frame has reached the card whole."),
+                                     ("output.timing", "The card keeps its refresh", "No late fetches reported.")):
+        out.append(found.get(cid) or check(cid, "ok", ok_title, ok_detail))
     out.append(_wiring_check(o))
     return out
 

@@ -80,6 +80,9 @@ def create_driver(settings: OutputSettings) -> OutputDriver:
     if settings.driver == "colorlight":
         from .colorlight import ColorlightDriver
         return ColorlightDriver(settings)
+    if settings.driver == "fpga":
+        from .fpga import FpgaDriver
+        return FpgaDriver(settings)
     return NullDriver()
 
 

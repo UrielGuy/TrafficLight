@@ -28,7 +28,7 @@ def sset(name, bpm=120, dur=30, rot=True):
 
 sets = [sset("Morning"), sset("Disco", 128, 60), sset("Quiet hours", 90, 120, False)]
 settings = {
-    "output": {"driver": "colorlight", "interface": "eth0", "brightness": 0.5, "gamma": 1.0, "rotate180": False,
+    "output": {"driver": "colorlight", "interface": "eth0", "card_address": "10.75.0.2", "card_port": 5775, "brightness": 0.5, "gamma": 1.0, "rotate180": False,
                "panel_order": [0, 1, 2, 3, 4, 5], "panel_flip": [False, False, True, False, False, False], "color_order": "rgb"},
     "audio": {"device": None, "volume": 0.8},
     "schedule": {"default_set": sets[0]["id"], "random_minutes": 6, "random_enabled": True},

@@ -9,6 +9,8 @@ Six 128×64 HUB75 panels stacked vertically = a 128×384 canvas = three 128×128
 **lights** (also "faces"): 0 top, 1 middle, 2 bottom. Each panel hangs on its
 own port of a Colorlight 5A-75B receiver card running the **stock firmware**;
 the PC or Raspberry Pi sends it raw Ethernet frames. Full 24-bit colour.
+Alternatively the card runs our **custom firmware** (`docs/FIRMWARE.md`, `Settings.output.driver = "fpga"`): the same
+image goes to it as UDP packets, packed into bit planes by the host.
 
 The card has eight ports (J1..J8) and is configured for a 128×512 image
 (`config.PORTS` bands of 64 rows, `config.CARD_H`): band *b* feeds J*b+1*.
@@ -49,7 +51,7 @@ web UI (React)  --REST + WebSocket-->  server (FastAPI)
 | `trafficlight/media/ingest.py` | Original -> prepared files (PyAV, Pillow): rotate, crop, trim, proxy, sound, thumbnail. |
 | `trafficlight/media/download.py` | Fetching a link with yt-dlp (as a library) and merging picture and sound with PyAV. |
 | `trafficlight/audio/` | `AudioEngine` contract (`base.py`) and the sounddevice mixer (`engine.py`). |
-| `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver, panel mapping (`mapping.py`), test patterns, the wiring rule (`wiring.py`: what the panels show → `panel_order` / `panel_flip`). |
+| `trafficlight/output/` | `OutputDriver` contract (`base.py`), Colorlight driver (stock firmware, raw Ethernet), FPGA driver (`fpga.py`: custom firmware over UDP, options in `TRAFFICLIGHT_FPGA`; `Settings.output.card_address` / `card_port`, defaults 10.75.0.2:5775; gamma and brightness are applied by its packer, so `output.gamma` is the real gamma, 2.2), panel mapping (`mapping.py`), test patterns, the wiring rule (`wiring.py`: what the panels show → `panel_order` / `panel_flip`). |
 | `trafficlight/output/hub75/` | Host side of the custom card firmware (`docs/FIRMWARE.md` is its contract): visit schedule, bit-plane packer, UDP packets, behavioural model of the card. |
 | `trafficlight/checks.py` | The setup checks (`State.checks`), built from the output and audio statuses. |
 | `trafficlight/store.py` | Sets and settings on disk. |
@@ -303,7 +305,11 @@ cannot start), `output.interface` (none chosen, not found), `output.access`
 `output.settings`, `output.link` (down, not gigabit), `output.send`,
 `output.receiver` (not answering), `output.card_size` (not 128×512),
 `output.wiring`, `audio.backend` (PortAudio missing), `audio.device`
-(missing, none, cannot open, stopped), `server.web_ui` (not built).
+(missing, none, cannot open, stopped), `server.web_ui` (not built). The custom firmware
+driver has no interface, access or link checks (plain UDP); it adds `output.receiver` (card
+answers / not / at another address), `output.firmware` (version, fits this sign),
+`output.schedule` (refresh schedule built and accepted, fewer planes than planned, rejected),
+`output.packets` (card drops packets or loses frames) and `output.timing` (card refresh stretching).
 
 ## WebSockets
 
@@ -389,7 +395,7 @@ class OutputDriver:
     def send(self, frame): ...          # (384,128,3) RGB, mapped by the driver (order, flips, rotation, colours)
     def send_card(self, image): ...     # (CARD_H,128,3) RGB already in the card's layout: colour order, gamma,
                                         # brightness only (the wiring picture); NullDriver ignores it
-    def set_frame_rate(self, fps): ...  # Settings.fps, from the engine; Colorlight paces its display packets on it
+    def set_frame_rate(self, fps): ...  # Settings.fps, from the engine; Colorlight paces its display packets on it, the FPGA driver builds the card's refresh schedule for it
     def status(self) -> dict: ...       # {"driver", "ok", "error", "interface", ..., "problems": [check-shaped dicts]}
 class OutputError(RuntimeError):        # OutputError(detail, fix, check="output.access", title=...): str() is the
                                         # whole message; as_problem() the check entry

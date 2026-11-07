@@ -47,12 +47,14 @@ export interface SetSummary {
 /** Body for POST /api/sets: everything optional except what you want to set. */
 export type NewSet = Partial<SetData>;
 
-export type OutputDriver = 'colorlight' | 'none';
+export type OutputDriver = 'colorlight' | 'fpga' | 'none';
 export type ColorOrder = 'rgb' | 'rbg' | 'grb' | 'gbr' | 'brg' | 'bgr';
 
 export interface OutputSettings {
   driver: OutputDriver;
   interface: string | null;
+  card_address: string;
+  card_port: number;
   brightness: number;
   gamma: number;
   rotate180: boolean;
