@@ -681,3 +681,29 @@ User decisions:
    no frame exists at power-up.
 10. Whether 12 planes at 1920 Hz / 60 fps is the right default, or 11
     planes with a longer LSB and more duty (table in 4.3).
+
+Gateware implementation notes (firmware/, 2026-11-06; see firmware/README.md):
+
+11. Values the gateware fixed: `tick_hz` 50,000,000 (the one system clock, also
+    LiteDRAM's); receive FIFO 16 KiB (4096 words, 11 full packets) plus a 16-entry
+    message FIFO; `min_visit_ticks` 256 as in section 3 (a 192-word fetch takes about
+    220 cycles with the writer streaming, in simulation on LiteDRAM's model).
+12. The gateware checks exactly what 6.5 lists and nothing about timing. The reference
+    model (`model.Card`) goes further: `Schedule.from_bytes` runs the host validator, so
+    it also rejects tables whose visits are shorter than the shift, light or fetch need,
+    or whose shortest OE is under `min_oe_ns` (100 ns, i.e. 5 ticks). Tests that compare
+    the two therefore use tables that pass both; the card accepts any pass length.
+13. The gateware accepts odd `cols` (records then start on a half word; the fetcher skips
+    it), and `visit_ticks` 0 is treated as 1 tick rather than rejected.
+14. Status `frame_ticks` is measured LAT(0,0) to LAT(0,0) in ticks, exactly rows x sum of
+    visits when no underrun stretched the pass.
+15. Confirmed on the V8.2 card (2026-11-06, SRAM loads over a Pico dirtyJTAG): the JTAG
+    IDCODE, clk25 = P6, LED = T6, the J1 colour pins and the shared A..E / CLK / LAT / OE
+    pins of section FPGA-BRINGUP 3.1, A = LSB of a binary row address, data set while CLK is
+    low and sampled on its rising edge, LAT active high, OE active low, R1 G1 B1 = panel
+    rows 0..31 and R2 G2 B2 = rows 32..63, colours uncrossed; the per-row sequence of 4.1
+    (shift, OE off, address, LAT pulse, OE on, next shift overlapping the light) lit the
+    expected picture, and the first shifted column (record column 0, 5.1) is the LEFT
+    column of the panel seen from the front. J1..J6's colour pins all drive their panel
+    as the table says (lane order 6c + s); J7 and J8 use the same table and have no panel
+    to check them with. These are the gateware's defaults.
