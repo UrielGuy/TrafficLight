@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import socket
 import struct
+
+import numpy as np
 from dataclasses import dataclass
 
 from .schedule import ENTRY_BYTES, HEADER_BYTES
@@ -300,6 +302,50 @@ def chunk_frame(frame: bytes | memoryview, frame_id: int, schedule_id: int, seq:
     packets.append(build_frame_commit(frame_id, schedule_id, len(view), count, seq + count))
     return packets
 
+
+
+# One FRAME_DATA header (common + chunk fields), little-endian and unpadded like _COMMON + _CHUNK.
+_CHUNK_HEAD = np.dtype([("magic", "S4"), ("version", "u1"), ("type", "u1"), ("body_len", "<u2"), ("seq", "<u4"),
+                        ("reserved", "<u4"), ("frame_id", "<u4"), ("index", "<u2"), ("length", "<u2"),
+                        ("offset", "<u4"), ("reserved2", "<u4")])
+assert _CHUNK_HEAD.itemsize == COMMON_BYTES + CHUNK_HEADER_BYTES
+
+
+def frame_datagrams(frame: bytes | memoryview | np.ndarray, frame_id: int, schedule_id: int, seq: int = 0,
+                    chunk_bytes: int = MAX_CHUNK_DATA) -> list:
+    """chunk_frame's datagrams, built at once: all headers in one numpy array, the frame copied into one
+    buffer, each chunk a memoryview of it (sendto takes those). 200-odd bytes objects a frame cost the
+    sender thread more than packing on a Raspberry Pi. The commit is bytes."""
+    if chunk_bytes % CHUNK_ALIGN or not 0 < chunk_bytes <= MAX_CHUNK_DATA:
+        raise ValueError(f"chunk_bytes must be a multiple of {CHUNK_ALIGN} up to {MAX_CHUNK_DATA}")
+    data = np.frombuffer(frame, np.uint8) if not isinstance(frame, np.ndarray) else frame.reshape(-1)
+    n = data.size
+    if n % CHUNK_ALIGN:
+        raise ValueError(f"frame of {n} bytes is not a multiple of {CHUNK_ALIGN}")
+    count = (n + chunk_bytes - 1) // chunk_bytes
+    if count > MAX_CHUNKS:
+        raise ValueError(f"{count} chunks, the card tracks {MAX_CHUNKS}")
+    head = _CHUNK_HEAD.itemsize
+    stride = head + chunk_bytes
+    lengths = np.full(count, chunk_bytes, np.uint32)
+    lengths[-1] = n - (count - 1) * chunk_bytes
+    index = np.arange(count, dtype=np.uint32)
+    h = np.zeros(count, _CHUNK_HEAD)
+    h["magic"], h["version"], h["type"] = MAGIC, VERSION, FRAME_DATA
+    h["body_len"] = CHUNK_HEADER_BYTES + lengths
+    h["seq"] = (index + np.uint32(seq & 0xFFFFFFFF)) & np.uint32(0xFFFFFFFF)
+    h["frame_id"], h["index"], h["length"] = frame_id & 0xFFFFFFFF, index, lengths
+    h["offset"] = index * np.uint32(chunk_bytes)
+    rows = np.empty((count, stride), np.uint8)
+    rows[:, :head] = h.view(np.uint8).reshape(count, head)
+    full = n // chunk_bytes
+    rows[:full, head:] = data[:full * chunk_bytes].reshape(full, chunk_bytes)
+    if full < count:
+        rows[full, head:head + int(lengths[-1])] = data[full * chunk_bytes:]
+    buf = memoryview(rows.reshape(-1))
+    packets: list = [buf[i * stride:i * stride + head + int(length)] for i, length in enumerate(lengths)]
+    packets.append(build_frame_commit(frame_id, schedule_id, n, count, seq + count))
+    return packets
 
 # -- parsing -----------------------------------------------------------------------------
 

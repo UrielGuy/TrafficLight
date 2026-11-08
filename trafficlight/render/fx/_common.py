@@ -143,6 +143,22 @@ def capsule_sd(x: np.ndarray, y: np.ndarray, ax: float, ay: float, bx: float, by
     return np.hypot(x - ax - t * bax, y - ay - t * bay) - (ra + (rb - ra) * t)
 
 
+def paint_capsule(img: np.ndarray, g: Grid, ax: float, ay: float, bx: float, by: float, ra: float, rb: float,
+                  rgb) -> None:
+    """paint(img, cov(capsule_sd(g.x, g.yb, ...)), rgb), worked out only in the capsule's bounding box: a
+    clock hand covers a sliver of the face, and coverage is exactly 0 outside the box, so the result is the
+    same to the bit for a fraction of the work."""
+    r = max(ra, rb) + 1.0
+    x0 = max(0, math.floor(min(ax, bx) - r + g.w / 2.0))
+    x1 = min(g.w, math.ceil(max(ax, bx) + r + g.w / 2.0) + 1)
+    y0 = max(0, math.floor(min(ay, by) - r + g.h / 2.0))
+    y1 = min(g.h, math.ceil(max(ay, by) + r + g.h / 2.0) + 1)
+    if x0 >= x1 or y0 >= y1:
+        return
+    sd = capsule_sd(g.x[:, x0:x1], g.yb[y0:y1, :], ax, ay, bx, by, ra, rb)
+    paint(img[y0:y1, x0:x1], cov(sd), rgb)
+
+
 def box_sd(qx: np.ndarray, qy: np.ndarray, hx: float, hy: float) -> np.ndarray:
     """Distance to an axis-aligned box of half sizes (hx, hy) centred on the origin."""
     dx, dy = np.abs(qx) - hx, np.abs(qy) - hy

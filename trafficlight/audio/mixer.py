@@ -26,15 +26,28 @@ WATCHDOG_SECONDS = 0.5
 LIMIT_KNEE = 0.8
 
 
-def _ramp(cur: float, target: float, n: int, rate: int, seconds: float) -> tuple[np.ndarray, float]:
-    """Per-sample gain moving from `cur` toward `target` no faster than full scale per `seconds`."""
+def _ramp(cur: float, target: float, n: int, rate: int, seconds: float) -> tuple[np.ndarray | float, float]:
+    """Per-sample gain moving from `cur` toward `target` no faster than full scale per `seconds`; just the
+    number while it stands still, which is nearly always (no array to build every callback)."""
     step = n / (seconds * rate)
     new = min(max(target, cur - step), cur + step)
+    if new == cur:
+        return cur, new
     return np.linspace(cur, new, n + 1, dtype=np.float32)[1:], new
+
+
+def _apply_gain(x: np.ndarray, gain: np.ndarray | float) -> None:
+    """In place: x (n, channels) times a per-sample or constant gain."""
+    if isinstance(gain, np.ndarray):
+        x *= gain[:, None]
+    elif gain != 1.0:
+        x *= gain
 
 
 def soft_limit(x: np.ndarray) -> None:
     """In place: linear up to the knee, then tanh-compressed toward +-1 (smooth, never harsh)."""
+    if x.size == 0 or max(x.max(), -x.min()) <= LIMIT_KNEE:
+        return          # the usual case, found without building |x|
     a = np.abs(x)
     over = a > LIMIT_KNEE
     if over.any():
@@ -109,7 +122,9 @@ class Voice:
     def _accumulate(self, acc: np.ndarray, blk: np.ndarray) -> None:
         seconds = FADE_OUT_SECONDS if self.dying else GAIN_SLEW_SECONDS
         g, self.gain_cur = _ramp(self.gain_cur, self.gain_target, len(acc), self.rate, seconds)
-        acc += blk * g[:, None]
+        if isinstance(g, np.ndarray) or g != 1.0:
+            blk = blk * (g[:, None] if isinstance(g, np.ndarray) else g)
+        acc += blk
 
 
 class Mixer:
@@ -230,6 +245,6 @@ class Mixer:
         vol, self._vol_cur = _ramp(self._vol_cur, self._volume, n, self.rate, GAIN_SLEW_SECONDS)
         for v in self._voices:
             v.mix_into(out)
-        out *= (pause * vol)[:, None]
+        _apply_gain(out, pause * vol)
         soft_limit(out)
         return out

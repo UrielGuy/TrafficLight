@@ -155,3 +155,33 @@ def test_packing_is_fast(sched):
         pk.pack(img, out)
     ms = (time.perf_counter() - t0) / 10 * 1e3
     assert ms < 40, f"pack took {ms:.1f} ms"          # ~1.5 ms on a PC; lenient for CI and the Pi
+
+
+def _reference_pack(pk: Packer, image: np.ndarray, err: np.ndarray) -> np.ndarray:
+    """The packer as first written: one byte per bit, reordered with numpy. Slow, obviously right."""
+    from trafficlight.output.hub75.schedule import BYTES_PER_COLUMN, PORTS
+    acc = pk.lut[image].astype(np.uint16)
+    if pk.dither:
+        acc += err
+        err[...] = acc & ((1 << FRACTION_BITS) - 1)
+        acc >>= FRACTION_BITS
+    else:
+        acc = (acc + (1 << (FRACTION_BITS - 1))) >> FRACTION_BITS
+    lanes = np.ascontiguousarray(acc.reshape(PORTS, 2, pk.rows, pk.cols, 3).transpose(2, 3, 0, 1, 4)
+                                 ).reshape(pk.rows, pk.cols, PORTS * 6)
+    bits = np.unpackbits(lanes.view(np.uint8), axis=-1, bitorder="little").reshape(pk.rows, pk.cols, -1, 16)
+    planes_first = np.ascontiguousarray(bits[..., :pk.planes].transpose(3, 0, 1, 2))
+    return np.packbits(planes_first, axis=-1, bitorder="little").reshape(-1)
+
+
+@pytest.mark.parametrize("planes", [8, 10, 12])
+@pytest.mark.parametrize("dither", [True, False])
+def test_packer_matches_the_reference_bit_for_bit(planes, dither):
+    s = build(ScheduleParams(planes=planes, split=min(planes, 6)))
+    pk = Packer(s, gamma=2.2, brightness=0.8, dither=dither)
+    err = np.zeros(CARD, np.uint16)
+    rng = np.random.default_rng(planes)
+    still = rng.integers(0, 256, CARD, np.uint8)
+    for i in range(6):          # a still picture, then changing ones: the dithering carry must match too
+        img = still if i < 3 else rng.integers(0, 256, CARD, np.uint8)
+        assert np.array_equal(pk.pack(img), _reference_pack(pk, img, err)), (planes, dither, i)

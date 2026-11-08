@@ -647,15 +647,20 @@ compare the status fields.
   gives the frame bytes: 8-bit -> gamma LUT (12.4 fixed point, brightness
   folded in) -> optional temporal dithering (the fraction left over is
   carried to the next frame; a still picture averages to the 16-bit value
-  over 16 frames) -> bit planes -> records. About 1.5 ms on a PC, a few ms
-  on a Pi 5, whole-array numpy. This card is linear: the host's gamma
-  (2.2, the default) is the gamma.
-* **Send** the chunks and the commit (`protocol.chunk_frame`) with a
-  monotonic `frame_id`, **paced**: at most 8 packets back to back, then
-  at least 250 µs before the next group (a frame then takes 6.5 ms to
-  send, less than a 60 fps period). Equivalent spacing (a packet every
-  30 µs) is fine too. The counters `rx_dropped` and `frames_incomplete`
-  show when pacing is insufficient.
+  over 16 frames) -> bit planes -> records (8 x 8 bit-matrix transposes on
+  64-bit words, see `hub75/pack.py`). About 0.7 ms on a PC, 8 ms on an idle
+  Raspberry Pi 4 (twice that while it also renders and decodes video). This
+  card is linear: the host's gamma (2.2, the default) is the gamma.
+* **Send** the chunks and the commit (`protocol.chunk_frame`; the driver
+  builds the same bytes with `protocol.frame_datagrams`) with a monotonic
+  `frame_id`, **paced**: at most 8 packets back to back, then at least
+  250 µs before the next group (a frame then takes 6.5 ms to send, less
+  than a 60 fps period). Equivalent spacing (a packet every 30 µs) is fine
+  too. The counters `rx_dropped` and `frames_incomplete` show when pacing
+  is insufficient. The driver sends from its own thread while the next
+  frame is packed. On a Raspberry Pi 4 the 206 `sendto` calls of a frame
+  take 20-40 ms of Python, and that caps the sign near 28 fps with video;
+  30 fps is the Pi's setting.
 * **Poll** the status about twice a second, with `seq` to match replies;
   report firmware, uptime, counters and `last_error` in the driver status;
   re-upload the schedule when the card restarted or runs another id.

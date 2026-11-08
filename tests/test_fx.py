@@ -494,3 +494,21 @@ def test_transparent_speed():
                 r.render(ctx(i * 0.137))
             times.append((time.perf_counter() - t0) / 20 * 1000)
         assert times[1] < max(4.0 * times[0], 3.0), (typ, times)
+
+
+def test_a_capsule_painted_in_its_box_equals_one_painted_over_the_whole_light():
+    """paint_capsule works out only the capsule's bounding box; outside it coverage is 0, so the picture
+    must be the same to the bit, also for capsules that run off the edge or lie wholly outside."""
+    from trafficlight.render.fx import _common as c
+    rng = np.random.default_rng(3)
+    for w, h in ((128, 128), (128, 384), (37, 53)):
+        g = c.grid(w, h)
+        for _ in range(60):
+            ax, bx = rng.uniform(-w, w, 2)
+            ay, by = rng.uniform(-h, h, 2)
+            ra, rb = rng.uniform(0.3, 9.0, 2)
+            base = (10, 20, 30) if rng.random() < 0.5 else c.CLEAR
+            full, boxed = c.canvas(w, h, base), c.canvas(w, h, base)
+            c.paint(full, c.cov(c.capsule_sd(g.x, g.yb, ax, ay, bx, by, ra, rb)), (200, 100, 0))
+            c.paint_capsule(boxed, g, ax, ay, bx, by, ra, rb, (200, 100, 0))
+            assert np.array_equal(full, boxed), (w, h, ax, ay, bx, by, ra, rb)

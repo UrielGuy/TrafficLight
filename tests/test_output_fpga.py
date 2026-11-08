@@ -543,6 +543,34 @@ def test_pacing_can_be_changed_and_switched_off(card, make):
     assert stamps2[205][0] - stamps2[0][0] < t[205] - t[0]
 
 
+def test_the_next_frame_is_packed_while_one_is_being_sent(card, make):
+    """Packing and sending overlap (the transmit thread): with slow pacing a frame takes ~80 ms to go
+    out, and the next one is packed long before that ends. Both still arrive whole, in order."""
+    stamps = []
+    d = make(factory=recorder_factory(stamps), options=opts(burst=1, gap_us=400))
+    ready(card, d)
+    wait_for(lambda: d._live is not None and d._ready, what="the driver using the schedule")
+    packed = []
+    pack = d._live.packer.pack
+
+    def timed(image, out=None):
+        r = pack(image, out)
+        packed.append(time.perf_counter())
+        return r
+    d._live.packer.pack = timed
+    a, b = picture(5), picture(6)
+    d.send(a)
+    wait_for(lambda: len(stamps) >= 10, what="the first frame going out")
+    d.send(b)
+    wait_for(lambda: len(packed) >= 2, what="the second frame packed")
+    commits = lambda: [s for s, kind in stamps if kind == P.FRAME_COMMIT]
+    wait_for(lambda: len(commits()) >= 1, what="the first frame's commit")
+    assert packed[1] < commits()[0], "the second frame was packed only after the first had gone out"
+    want = expected(b, card.active)
+    wait_for(lambda: card.shown_frame == want, what="the second frame shown")
+    assert card.counter("frames_incomplete") == 0 and card.counter("frames_rejected") == 0
+
+
 def test_pacing_costs_what_the_spec_says_per_frame(card, make):
     """206 packets in groups of 8 with 250 us between them: 25 gaps = 6.25 ms plus the sends themselves."""
     stamps = []

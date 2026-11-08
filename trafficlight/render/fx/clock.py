@@ -34,6 +34,14 @@ def _dial(w: int, h: int) -> np.ndarray:
     return out
 
 
+@lru_cache(maxsize=16)
+def _disc(w: int, h: int, radius: float) -> np.ndarray:
+    """Coverage of a disc on every light's centre (the hub and its pin; they never move)."""
+    m = c.cov(c.grid(w, h).d - radius).astype(np.float32)
+    m.flags.writeable = False
+    return m
+
+
 def _dir(deg: float) -> tuple[float, float]:
     a = math.radians(deg)
     return math.sin(a), -math.cos(a)
@@ -47,16 +55,15 @@ def draw_watch(img: np.ndarray, w: int, h: int, base, ink: c.colors.RGB,
     # Tapered hands from the centre to a round tip (half widths in the old sign's units).
     for deg, length, w0, w1 in ((hour_deg, 64.0, 9.0, 5.0), (minute_deg, 102.0, 7.0, 4.0)):
         dx, dy = _dir(deg)
-        c.paint(img, c.cov(c.capsule_sd(g.x, g.yb, 0.0, 0.0, dx * length * U, dy * length * U, w0 * U, w1 * U)), ink)
+        c.paint_capsule(img, g, 0.0, 0.0, dx * length * U, dy * length * U, w0 * U, w1 * U, ink)
     # Hub with a pin in the face colour; the second hand runs over it.
-    c.paint(img, c.cov(g.d - 14.0 * U), ink)
-    c.paint(img, c.cov(g.d - 4.0 * U), base)      # a transparent base punches the pin out
+    c.paint(img, _disc(w, h, 14.0 * U), ink)
+    c.paint(img, _disc(w, h, 4.0 * U), base)      # a transparent base punches the pin out
     if second_deg is not None:
         sc = second_color or ink
         dx, dy = _dir(second_deg)
         thin = 0.9
-        c.paint(img, c.cov(c.capsule_sd(g.x, g.yb, -dx * 22.0 * U, -dy * 22.0 * U, dx * 108.0 * U, dy * 108.0 * U,
-                                        thin, thin)), sc)
+        c.paint_capsule(img, g, -dx * 22.0 * U, -dy * 22.0 * U, dx * 108.0 * U, dy * 108.0 * U, thin, thin, sc)
 
 
 @register

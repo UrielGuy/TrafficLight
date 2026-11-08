@@ -1,7 +1,7 @@
 """Output driver for the custom FPGA firmware of the Colorlight 5A-75B (docs/FIRMWARE.md).
 
 Plain UDP to the card (port 5775), no privileges needed. The card is a streamer; everything
-else happens here, on one sender thread:
+else happens on a sender thread, except the frames' datagrams, which a transmit thread paces out:
 
 * Finding the card (section 6.1): every card broadcasts an ANNOUNCE to 10.75.255.255:5776 every second.
   The driver listens on that port and, from the same socket, asks (ANNOUNCE_REQ to 10.75.255.255:5775),
@@ -11,7 +11,9 @@ else happens here, on one sender thread:
   settings pins the card instead; it is still asked who it is.
 * ``send()`` / ``send_card()`` only copy the picture into a slot and wake the thread, which maps it
   (``Mapper``), packs it (``hub75.pack.Packer``: gamma, brightness, temporal dithering, bit planes) and
-  sends the newest one; pictures it could not get to are dropped.
+  hands the datagrams to the transmit thread; pictures it could not get to are dropped. The next frame
+  is packed while the transmit thread sends this one (the datagrams are copies), so a frame costs the
+  longer of the two, not their sum; on a Raspberry Pi both take several milliseconds.
 * The thread asks the card for its status about twice a second. The status gives the card's constants
   (tick rate, minimum visit, limits), from which the visit schedule is built for the engine's frame rate
   and uploaded; the card restarting (uptime back, schedule gone) brings the same upload again. Frames are
@@ -169,11 +171,20 @@ def _ema(old: float, new: float, first: bool) -> float:
     return new if first else 0.9 * old + 0.1 * new
 
 
+# Windows' sleep() rounds up to a timer tick, a millisecond or more: far longer than the gaps.
+_SPIN = sys.platform == "win32"
+
+
 def wait_until(t: float) -> None:
-    """Return at perf_counter time t. Spun, because the gaps are a fraction of a millisecond and sleep()
-    rounds up to a timer tick (a millisecond or worse on Windows); sleep(0) hands the core over meanwhile."""
-    while time.perf_counter() < t:
-        time.sleep(0)
+    """Return at perf_counter time t, or a little after. Linux sleeps: its timers wake within some tens of
+    microseconds, and a gap only has to be at least so long, while spinning through every gap kept a whole
+    core busy (a quarter of a Raspberry Pi). Windows spins; sleep(0) hands the core over meanwhile."""
+    if _SPIN:
+        while time.perf_counter() < t:
+            time.sleep(0)
+        return
+    while (left := t - time.perf_counter()) > 0:
+        time.sleep(left)
 
 
 # One probe for every driver the engine opens (it reopens the driver on each settings change).
@@ -200,6 +211,10 @@ class FpgaDriver(OutputDriver):
         self._next_ask = 0.0
         self._ask_error: str | None = None
         self._thread: threading.Thread | None = None
+        self._tx_thread: threading.Thread | None = None
+        # the next frame for the transmit thread: (frame id, datagrams); the sender packs no further ahead
+        self._outbox: tuple[int, list] | None = None
+        self._tx_cond = threading.Condition()
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -231,8 +246,7 @@ class FpgaDriver(OutputDriver):
         self._rejected_base = 0
         self._send_problem: dict[str, Any] | None = None
         self._next_id: int | None = None
-        self._sent_id: int | None = None
-        self._sent_at = 0.0
+        self._sent: tuple[int, float] | None = None       # (frame id, when) of the last frame sent whole
         self._next_resend = 0.0
         self._gap_min: float | None = None
 
@@ -271,7 +285,9 @@ class FpgaDriver(OutputDriver):
         self._since = time.monotonic()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="fpga-sender", daemon=True)
+        self._tx_thread = threading.Thread(target=self._tx_run, name="fpga-transmit", daemon=True)
         self._thread.start()
+        self._tx_thread.start()
 
     def _open_socket(self, port: int) -> socket.socket:
         # No SO_REUSEADDR: with it a second server could bind the announce port too (always on Windows) and
@@ -310,17 +326,19 @@ class FpgaDriver(OutputDriver):
         self._wake.set()
 
     def close(self) -> None:
-        t = self._thread
-        if t is not None:
-            self._stop.set()
-            self._wake.set()
-            t.join(timeout=2.0)
-            self._thread = None
+        self._stop.set()
+        self._wake.set()
+        with self._tx_cond:
+            self._tx_cond.notify_all()
+        for t in (self._thread, self._tx_thread):
+            if t is not None:
+                t.join(timeout=2.0)
+        self._thread = self._tx_thread = None
         live = self._live
         if self._sock is not None:
             if live is not None and self._ready:
                 try:      # the card keeps the last frame for ever: leave it dark
-                    self._transmit(self._datagrams(bytes(live.schedule.frame_bytes), live))
+                    self._transmit(self._datagrams(bytes(live.schedule.frame_bytes), live)[1])
                 except OSError:
                     pass
             self._sock.close()
@@ -564,7 +582,9 @@ class FpgaDriver(OutputDriver):
         self._since = now
         self._status = None
         self._history.clear()
-        self._next_id = self._sent_id = None
+        self._next_id = self._sent = None
+        with self._tx_cond:
+            self._outbox = None              # numbered for the card at the old address
         self._ready = False
         self._resend = self._have_img
         self._next_poll = self._next_upload = self._hold_until = 0.0
@@ -635,8 +655,9 @@ class FpgaDriver(OutputDriver):
                     "Update the card's firmware or the program so they agree (docs/FIRMWARE.md section 6.5).")
         # A frame the card does not show some time after we sent it was lost: the next one may be a while
         # coming (a still picture), so send it again.
-        if (self._sent_id is not None and self._ready and now - self._sent_at > LOST_AFTER and now >= self._next_resend
-                and st.frame_id_shown != self._sent_id and not st.flag(P.FLAG_FRAME_PENDING) and self._have_img):
+        sent = self._sent
+        if (sent is not None and self._ready and now - sent[1] > LOST_AFTER and now >= self._next_resend
+                and st.frame_id_shown != sent[0] and not st.flag(P.FLAG_FRAME_PENDING) and self._have_img):
             self._resend = True
             self._next_resend = now + RESEND_EVERY
             self._stats.resent += 1
@@ -699,6 +720,8 @@ class FpgaDriver(OutputDriver):
             "docs/FIRMWARE.md section 4).")
 
     def _work(self, now: float) -> None:
+        if self._outbox is not None:
+            return          # a packed frame still waits for the transmit thread: it wakes us when it takes it
         for live in (self._live, self._target):
             if live is not None and self._levels_dirty:
                 live.packer.set_gamma(self._gamma(), self._brightness)
@@ -734,23 +757,44 @@ class FpgaDriver(OutputDriver):
             self._holding = True
             return
         self._holding = False
-        self._transmit(self._datagrams(memoryview(buf), live))
+        frame = self._datagrams(memoryview(buf), live)       # copies: buf is free again
         live.cur, live.has_prev = 1 - live.cur, True
-        t2 = time.perf_counter()
-        self._sent_id, self._sent_at = (self._next_id - 1) & 0xFFFFFFFF, time.monotonic()
-        s.frames += 1
-        s.send_ms = _ema(s.send_ms, (t2 - t1) * 1000, s.frames == 1)
-        s.times.append(self._sent_at)
-        self._send_problem = None
+        with self._tx_cond:
+            self._outbox = frame
+            self._tx_cond.notify()
 
-    def _datagrams(self, frame, live: _Live) -> list[bytes]:
+    def _datagrams(self, frame, live: _Live) -> tuple[int, list]:
         assert self._next_id is not None        # set by the first status, before anything is ready
         frame_id, self._next_id = self._next_id, (self._next_id + 1) & 0xFFFFFFFF
-        packets = P.chunk_frame(frame, frame_id, live.id, self._seq, self.options.chunk_bytes)
+        packets = P.frame_datagrams(frame, frame_id, live.id, self._seq, self.options.chunk_bytes)
         self._seq = (self._seq + len(packets)) & 0xFFFFFFFF
-        return packets
+        return frame_id, packets
 
-    def _transmit(self, packets: list[bytes]) -> None:
+    # -- transmit thread
+    def _tx_run(self) -> None:
+        while True:
+            with self._tx_cond:
+                while self._outbox is None and not self._stop.is_set():
+                    self._tx_cond.wait()
+                if self._stop.is_set():
+                    return
+                frame_id, packets = self._outbox
+                self._outbox = None
+            self._wake.set()                   # the sender may pack the next frame while this one goes out
+            t0 = time.perf_counter()
+            try:
+                self._transmit(packets)
+            except OSError as e:
+                self._send_failed(e)
+                continue
+            s = self._stats
+            self._sent = (frame_id, time.monotonic())
+            s.frames += 1
+            s.send_ms = _ema(s.send_ms, (time.perf_counter() - t0) * 1000, s.frames == 1)
+            s.times.append(self._sent[1])
+            self._send_problem = None
+
+    def _transmit(self, packets: list) -> None:
         """Section 9: bursts of at most `burst` packets, `gap_us` between the groups."""
         sock, addr, o = self._sock, self._addr, self.options
         assert sock is not None and addr is not None

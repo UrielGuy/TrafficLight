@@ -100,6 +100,14 @@ def sign_mask() -> np.ndarray:
 
 
 @lru_cache(maxsize=1)
+def _sign_mask3() -> np.ndarray:
+    """(H, W, 3) float32: sign_mask() for each colour."""
+    m = np.repeat(sign_mask()[..., None], 3, axis=2)
+    m.flags.writeable = False
+    return m
+
+
+@lru_cache(maxsize=1)
 def _ring() -> np.ndarray:
     d = _face_dist()
     return (_coverage(d, config.FACE_RADIUS) - _coverage(d, config.FACE_RADIUS - config.RING_WIDTH)).astype(np.float32)
@@ -396,10 +404,16 @@ class Player:
                 rest = bg.copy()
             self._blend(lit[y0:y0 + h], None if masked else rest[y0:y0 + h], img, clip, k)
 
+        # canvas = outside + (lit - outside) * mask, in place in `lit` (a fresh copy every frame). The mask has
+        # its three channels spelled out: broadcasting it over a last axis of 3 makes numpy's inner loops
+        # 3 long, several times slower on a Raspberry Pi.
         outside = bg if rest is None else rest
-        canvas = outside + (lit - outside) * sign_mask()[..., None]
-        np.clip(canvas, 0, 255, out=canvas)
-        return np.rint(canvas).astype(np.uint8), cues
+        np.subtract(lit, outside, out=lit)
+        np.multiply(lit, _sign_mask3(), out=lit)
+        np.add(lit, outside, out=lit)
+        np.clip(lit, 0, 255, out=lit)
+        np.rint(lit, out=lit)
+        return lit.astype(np.uint8), cues
 
     def _audio(self, r: ClipRenderer, clip: Clip, t: float, h: int, face: Optional[int], wall: _dt.datetime,
                cues: list[AudioCue], ctx: Optional[RenderContext] = None) -> None:

@@ -367,3 +367,15 @@ def test_the_card_takes_a_pass_of_any_length():
 
 def status_of_upload(card, sched):
     return P.parse(card.receive(P.build_schedule(sched.to_bytes(), 3)))
+
+
+@pytest.mark.parametrize("chunk", [P.MAX_CHUNK_DATA, 1024, 32])
+@pytest.mark.parametrize("size", [32, 1440, 1472, 294912, 294912 - 288])
+def test_frame_datagrams_are_chunk_frame_byte_for_byte(chunk, size):
+    """The driver's fast builder must send exactly what the reference chunk_frame describes."""
+    if -(-size // chunk) > P.MAX_CHUNKS:
+        pytest.skip("more chunks than the card tracks")
+    frame = np.random.default_rng(size).integers(0, 256, size, np.uint8)
+    want = P.chunk_frame(frame.tobytes(), 0xFFFFFFF0, 0x1234, seq=0xFFFFFFFE, chunk_bytes=chunk)
+    got = P.frame_datagrams(frame, 0xFFFFFFF0, 0x1234, seq=0xFFFFFFFE, chunk_bytes=chunk)
+    assert [bytes(g) for g in got] == want
