@@ -525,6 +525,19 @@ def test_packets_go_out_in_bursts_with_the_gaps_the_spec_asks_for(card, make):
     wait_for(lambda: card.shown_frame is not None and card.counter("frames_incomplete") == 0)
 
 
+def test_the_gap_is_kept_between_one_frame_and_the_next(card, make):
+    stamps = []
+    d = make(factory=recorder_factory(stamps))
+    ready(card, d)
+    d.send(picture(1))
+    d.send(picture(2))
+    time.sleep(0.002)
+    d.send(picture(3))
+    wait_for(lambda: len(stamps) >= 2 * 206, what="two frames of packets")
+    assert stamps[205][1] == P.FRAME_COMMIT
+    assert stamps[206][0] - stamps[205][0] >= 250e-6
+
+
 def test_pacing_can_be_changed_and_switched_off(card, make):
     stamps = []
     d = make(factory=recorder_factory(stamps), options=opts(burst=4, gap_us=500))

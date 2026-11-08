@@ -13,7 +13,9 @@ else happens on a sender thread, except the frames' datagrams, which a transmit 
   (``Mapper``), packs it (``hub75.pack.Packer``: gamma, brightness, temporal dithering, bit planes) and
   hands the datagrams to the transmit thread; pictures it could not get to are dropped. The next frame
   is packed while the transmit thread sends this one (the datagrams are copies), so a frame costs the
-  longer of the two, not their sum; on a Raspberry Pi both take several milliseconds.
+  longer of the two, not their sum. On Linux the packing and the transmit loop run in C (hub75/native.c,
+  when built) without the interpreter lock: on a Raspberry Pi the numpy packer takes several milliseconds,
+  and the Python loop takes the lock back after each of its 200-odd sends, against the render thread.
 * The thread asks the card for its status about twice a second. The status gives the card's constants
   (tick rate, minimum visit, limits), from which the visit schedule is built for the engine's frame rate
   and uploaded; the card restarting (uptime back, schedule gone) brings the same upload again. Frames are
@@ -26,7 +28,7 @@ else happens on a sender thread, except the frames' datagrams, which a transmit 
   again; nothing else is retransmitted.
 
 Options that are not Settings come from the TRAFFICLIGHT_FPGA environment variable, e.g.
-"planes=11,dither=off,burst=4".
+"planes=11,dither=off,burst=4" (native=off: the Python code even where the C code is built).
 """
 from __future__ import annotations
 
@@ -44,6 +46,7 @@ import numpy as np
 from .. import config
 from ..model import OutputSettings
 from .base import OutputDriver, OutputError, problem
+from .hub75 import native
 from .hub75 import protocol as P
 from .hub75.model import newer
 from .hub75.pack import Packer
@@ -58,7 +61,7 @@ ACK_WAIT = 0.25              # frames wait this long at most for the reply to a 
 LOST_AFTER = 0.3             # a frame the card does not show this long after sending is sent again
 RESEND_EVERY = 1.0           # ... but not more often than this
 HEALTH_WINDOW = 10.0         # seconds over which the card's loss counters are judged
-SWITCH_INTERVAL = 0.0002     # a thread spinning in the pacer must hand the GIL over within a fraction of a ms
+SWITCH_INTERVAL = 0.0002     # the Python pacer must get the GIL back within a fraction of a ms after each send
 MIN_PLANES = 8               # below this the picture is too coarse to be worth showing: report instead
 ASK_EVERY = 1.0              # ANNOUNCE_REQ this often while no card is known ...
 ASK_EVERY_FOUND = 5.0        # ... and this often once one is (other cards show up through a firewall too)
@@ -82,6 +85,7 @@ class FpgaOptions:
     chunk_bytes: int = P.MAX_CHUNK_DATA
     broadcast: str = P.BROADCAST_IP   # where ANNOUNCE_REQ goes when no address is set ("/" between several)
     announce_port: int = P.ANNOUNCE_PORT    # listened on for the cards' announcements; 0 = any free port
+    native: bool = True               # the C packer and transmit loop, where built (hub75/native.py)
 
     @classmethod
     def parse(cls, text: str | None) -> "FpgaOptions":
@@ -212,8 +216,9 @@ class FpgaDriver(OutputDriver):
         self._ask_error: str | None = None
         self._thread: threading.Thread | None = None
         self._tx_thread: threading.Thread | None = None
-        # the next frame for the transmit thread: (frame id, datagrams); the sender packs no further ahead
-        self._outbox: tuple[int, list] | None = None
+        # the next frame for the transmit thread: (frame id, P.frame_rows); the sender packs no further ahead
+        self._outbox: tuple[int, np.ndarray, np.ndarray] | None = None
+        self._native = native.load() if self.options.native else None
         self._tx_cond = threading.Condition()
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -249,6 +254,7 @@ class FpgaDriver(OutputDriver):
         self._sent: tuple[int, float] | None = None       # (frame id, when) of the last frame sent whole
         self._next_resend = 0.0
         self._gap_min: float | None = None
+        self._last_burst = 0.0       # perf_counter of the Python loop's last group; the C loop keeps its own
 
     # ---- contract
     def open(self) -> None:
@@ -338,7 +344,7 @@ class FpgaDriver(OutputDriver):
         if self._sock is not None:
             if live is not None and self._ready:
                 try:      # the card keeps the last frame for ever: leave it dark
-                    self._transmit(self._datagrams(bytes(live.schedule.frame_bytes), live)[1])
+                    self._transmit(*self._datagrams(bytes(live.schedule.frame_bytes), live)[1:])
                 except OSError:
                     pass
             self._sock.close()
@@ -365,6 +371,8 @@ class FpgaDriver(OutputDriver):
             "sent_fps": round(fps, 1), "frames": s.frames, "dropped": s.dropped, "held": s.held,
             "resent": s.resent, "holding": self._holding,
             "pack_ms": round(s.pack_ms, 2), "send_ms": round(s.send_ms, 2),
+            "transmit": "c" if self._c_loop() is not None else "python",
+            "backlogs": self._native.backlogs if self._native is not None else 0,
             "min_gap_us": round(self._gap_min * 1e6) if self._gap_min is not None else None,
             "brightness": self._brightness,
             "network": self._network.status(), "need_mbps": self._need_mbps(), "frame_rate": self._fps,
@@ -520,7 +528,7 @@ class FpgaDriver(OutputDriver):
 
     # -- sender thread
     def _run(self) -> None:
-        if self.options.pace:
+        if self.options.pace and self._c_loop() is None:
             sys.setswitchinterval(min(sys.getswitchinterval(), SWITCH_INTERVAL))
         while not self._stop.is_set():
             self._wake.wait(0.02)
@@ -704,7 +712,7 @@ class FpgaDriver(OutputDriver):
             if self._live is not None and self._live.id == s.schedule_id:
                 self._target = self._live
             else:
-                packer = Packer(s, self._gamma(), self._brightness, o.dither)
+                packer = Packer(s, self._gamma(), self._brightness, o.dither, self._native)
                 self._target = _Live(s, packer, [np.empty(s.frame_bytes, np.uint8) for _ in range(2)])
             self._levels_dirty = True
             self._next_upload = 0.0
@@ -763,12 +771,12 @@ class FpgaDriver(OutputDriver):
             self._outbox = frame
             self._tx_cond.notify()
 
-    def _datagrams(self, frame, live: _Live) -> tuple[int, list]:
+    def _datagrams(self, frame, live: _Live) -> tuple[int, np.ndarray, np.ndarray]:
         assert self._next_id is not None        # set by the first status, before anything is ready
         frame_id, self._next_id = self._next_id, (self._next_id + 1) & 0xFFFFFFFF
-        packets = P.frame_datagrams(frame, frame_id, live.id, self._seq, self.options.chunk_bytes)
-        self._seq = (self._seq + len(packets)) & 0xFFFFFFFF
-        return frame_id, packets
+        rows, lengths = P.frame_rows(frame, frame_id, live.id, self._seq, self.options.chunk_bytes)
+        self._seq = (self._seq + len(lengths)) & 0xFFFFFFFF
+        return frame_id, rows, lengths
 
     # -- transmit thread
     def _tx_run(self) -> None:
@@ -778,12 +786,12 @@ class FpgaDriver(OutputDriver):
                     self._tx_cond.wait()
                 if self._stop.is_set():
                     return
-                frame_id, packets = self._outbox
+                frame_id, rows, lengths = self._outbox
                 self._outbox = None
             self._wake.set()                   # the sender may pack the next frame while this one goes out
             t0 = time.perf_counter()
             try:
-                self._transmit(packets)
+                self._transmit(rows, lengths)
             except OSError as e:
                 self._send_failed(e)
                 continue
@@ -794,14 +802,26 @@ class FpgaDriver(OutputDriver):
             s.times.append(self._sent[1])
             self._send_problem = None
 
-    def _transmit(self, packets: list) -> None:
-        """Section 9: bursts of at most `burst` packets, `gap_us` between the groups."""
+    def _c_loop(self) -> native.Native | None:
+        # Only on a plain socket: a test's socket subclass sees each datagram in Python.
+        return self._native if type(self._sock) is socket.socket else None
+
+    def _transmit(self, rows: np.ndarray, lengths: np.ndarray) -> None:
+        """Section 9: bursts of at most `burst` packets, `gap_us` between the groups, also between the last
+        group of one frame and the first of the next (a packed frame is ready as soon as the last is out)."""
         sock, addr, o = self._sock, self._addr, self.options
         assert sock is not None and addr is not None
         gap = o.gap_us / 1e6
-        last = 0.0
-        for i, data in enumerate(packets):
-            if o.pace and i and i % o.burst == 0:
+        c = self._c_loop()
+        if c is not None:
+            kept = c.send_paced(sock.fileno(), rows, lengths, addr, o.burst if o.pace else len(lengths),
+                                gap if o.pace else 0.0)
+            if kept is not None:
+                self._gap_min = kept if self._gap_min is None else min(self._gap_min, kept)
+            return
+        for i, data in enumerate(P.frame_datagrams(rows, lengths)):
+            last = self._last_burst
+            if o.pace and last and i % o.burst == 0:
                 wait_until(last + gap)
                 started = time.perf_counter()
                 self._gap_min = started - last if self._gap_min is None else min(self._gap_min, started - last)
@@ -811,7 +831,8 @@ class FpgaDriver(OutputDriver):
                     break
                 except BlockingIOError:
                     time.sleep(0.0001)
-            last = time.perf_counter()
+                finally:
+                    self._last_burst = time.perf_counter()
 
     def _send_failed(self, e: OSError) -> None:
         self._send_problem = problem(

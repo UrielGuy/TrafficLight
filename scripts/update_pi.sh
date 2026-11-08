@@ -53,9 +53,10 @@ elif (( ! build && ! dry )); then
     [[ -z $newest ]] || echo "WARNING: $newest is newer than web/dist: the UI may be stale." >&2
 fi
 
-# Not shipped: .venv, data, tests, web sources and node_modules.
+# Not shipped: .venv, data, tests, web sources and node_modules, and libraries built here (install_pi.sh
+# builds the Pi's own).
 items=(trafficlight assets scripts web/dist docs requirements.txt pyproject.toml README.md)
-pack() { tar --exclude=__pycache__ --exclude='*.pyc' --owner=0 --group=0 -czf - "${items[@]}"; }
+pack() { tar --exclude=__pycache__ --exclude='*.pyc' --exclude='*.so' --owner=0 --group=0 -czf - "${items[@]}"; }
 if (( dry )); then
     echo "Would send (top two path levels):"
     pack | tar -tz | awk -F/ '{print $1 ($2 != "" ? "/" $2 : "")}' | sort -u

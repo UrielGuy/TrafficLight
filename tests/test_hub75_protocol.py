@@ -377,5 +377,5 @@ def test_frame_datagrams_are_chunk_frame_byte_for_byte(chunk, size):
         pytest.skip("more chunks than the card tracks")
     frame = np.random.default_rng(size).integers(0, 256, size, np.uint8)
     want = P.chunk_frame(frame.tobytes(), 0xFFFFFFF0, 0x1234, seq=0xFFFFFFFE, chunk_bytes=chunk)
-    got = P.frame_datagrams(frame, 0xFFFFFFF0, 0x1234, seq=0xFFFFFFFE, chunk_bytes=chunk)
+    got = P.frame_datagrams(*P.frame_rows(frame, 0xFFFFFFF0, 0x1234, seq=0xFFFFFFFE, chunk_bytes=chunk))
     assert [bytes(g) for g in got] == want

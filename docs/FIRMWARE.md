@@ -648,19 +648,27 @@ compare the status fields.
   folded in) -> optional temporal dithering (the fraction left over is
   carried to the next frame; a still picture averages to the 16-bit value
   over 16 frames) -> bit planes -> records (8 x 8 bit-matrix transposes on
-  64-bit words, see `hub75/pack.py`). About 0.7 ms on a PC, 8 ms on an idle
-  Raspberry Pi 4 (twice that while it also renders and decodes video). This
-  card is linear: the host's gamma (2.2, the default) is the gamma.
+  64-bit words, see `hub75/pack.py`). About 0.7 ms on a PC, 14 ms on a
+  Raspberry Pi 4 in numpy; on Linux the same bytes come from C
+  (`hub75/native.c`, built by `scripts/install_pi.sh`) in 4 ms, without
+  the interpreter lock. This card is linear: the host's gamma (2.2, the
+  default) is the gamma.
 * **Send** the chunks and the commit (`protocol.chunk_frame`; the driver
-  builds the same bytes with `protocol.frame_datagrams`) with a monotonic
+  builds the same bytes with `protocol.frame_rows`) with a monotonic
   `frame_id`, **paced**: at most 8 packets back to back, then at least
-  250 µs before the next group (a frame then takes 6.5 ms to send, less
-  than a 60 fps period). Equivalent spacing (a packet every 30 µs) is fine
-  too. The counters `rx_dropped` and `frames_incomplete` show when pacing
-  is insufficient. The driver sends from its own thread while the next
-  frame is packed. On a Raspberry Pi 4 the 206 `sendto` calls of a frame
-  take 20-40 ms of Python, and that caps the sign near 28 fps with video;
-  30 fps is the Pi's setting.
+  250 µs before the next group, the next frame's first group included (a
+  frame then takes 6.5 ms to send, less than a 60 fps period). Equivalent
+  spacing (a packet every 30 µs) is fine too. The counters `rx_dropped`
+  and `frames_incomplete` show when pacing is insufficient. The driver
+  sends from its own thread while the next frame is packed. On Linux the
+  loop is C: one `sendmmsg` per group and a sleep per gap, without the
+  interpreter lock (in Python the 206 `sendto` calls of a frame cost a
+  Raspberry Pi 4 20-40 ms and capped it near 28 fps with video; with the
+  C packer and sender it keeps 60). A gap kept by the program is not
+  always a gap on the wire: a busy Pi sometimes holds sent packets back
+  and lets several groups go at once, more than the FIFO takes, so the C
+  loop also waits until the last group has left the system (`SIOCOUTQ`)
+  before the next; the driver status counts those waits (`backlogs`).
 * **Poll** the status about twice a second, with `seq` to match replies;
   report firmware, uptime, counters and `last_error` in the driver status;
   re-upload the schedule when the card restarted or runs another id.
@@ -695,7 +703,9 @@ whether it loses packets. Notes on what the driver does beyond the list above:
   `planes=11,dither=off,burst=4,gap_us=300`: `planes`, `split`, `clk_div`,
   `blank_before`, `lat_ticks`, `blank_after` (ticks), `min_oe_ns`, `dither`,
   `pace`, `burst`, `gap_us`, `chunk_bytes`, `broadcast` (addresses asked,
-  separated by `/`, when the card does not answer at its own address).
+  separated by `/`, when the card does not answer at its own address),
+  `native` (`off`: the numpy packer and Python loop even where the C code
+  is built; the driver status says which runs, `transmit`).
 
 ## 10. Limits
 

@@ -17,6 +17,9 @@ byte m holds bit m of the eight lanes, which is byte q of plane m's 48-bit colum
 is three rounds of shifts and masks over all words at once (Hacker's Delight, "transpose8"), and a
 final byte reorder puts the planes first. Nothing ever takes a byte per bit, which on a Raspberry Pi
 is what costs: it is memory-bound.
+
+Where native.c is built (the Pi), the same work runs in C instead (``Packer(native=...)``), in a fraction
+of the time and without the interpreter lock; this numpy code is the reference it is tested against.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ import sys
 import numpy as np
 
 from ... import config
+from .native import Native
 from .schedule import BYTES_PER_COLUMN, PORTS, Schedule
 
 FRACTION_BITS = 4
@@ -64,7 +68,8 @@ def lane_index(rows: int, cols: int) -> np.ndarray:
 class Packer:
     """Holds the LUT and the dithering state. ``pack`` is the hot path."""
 
-    def __init__(self, schedule: Schedule, gamma: float = 2.2, brightness: float = 1.0, dither: bool = True):
+    def __init__(self, schedule: Schedule, gamma: float = 2.2, brightness: float = 1.0, dither: bool = True,
+                 native: Native | None = None):
         _check_geometry(schedule.rows, schedule.cols)
         if not 0 < schedule.planes <= 16 - FRACTION_BITS:
             raise ValueError(f"{schedule.planes} planes do not fit the 16-bit gamma table")
@@ -81,6 +86,10 @@ class Packer:
         self._nbytes = (self.planes + 7) // 8            # bytes of a value that hold planes
         self._words = np.zeros((self.rows, self.cols, self._nbytes, _LANES), np.uint8)
         self._tmp = np.empty((self.rows, self.cols, self._nbytes, _GROUPS), np.uint64)
+        self._native = native
+        if native is not None:
+            self._index32 = self._index.astype(np.int32)
+            assert 0 <= self._index32.min() and self._index32.max() < config.CARD_H * config.W * 3
 
     def set_gamma(self, gamma: float, brightness: float) -> None:
         self.gamma, self.brightness = gamma, brightness
@@ -98,6 +107,10 @@ class Packer:
             out = np.empty(self.frame_bytes, np.uint8)
         elif out.shape != (self.frame_bytes,) or out.dtype != np.uint8:
             raise ValueError(f"out must be uint8[{self.frame_bytes}]")
+        if self._native is not None:
+            self._native.pack(np.ascontiguousarray(image), self._index32, self.lut, self._err if self.dither else None,
+                              self.rows, self.cols, self.planes, out)
+            return out
         np.take(np.ascontiguousarray(image).reshape(-1), self._index, out=self._in.reshape(-1))
         acc = self._acc
         np.take(self.lut, self._in, out=acc)

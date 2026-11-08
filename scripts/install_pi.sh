@@ -85,10 +85,11 @@ fi
 # python3-venv: venv + ensurepip (Debian splits it out of python3).
 # libportaudio2: sounddevice's wheel is pure Python and loads the system PortAudio
 #   (checked: sounddevice-0.5.6 has no bundled library on Linux).
+# gcc, libc6-dev: build the C transmit loop below (Raspberry Pi OS has them; Lite images may not).
 # Nothing else: the aarch64 wheels of numpy, pillow, av (FFmpeg, ALSA included), pydantic,
 # uvloop... are manylinux and bundle their libraries (checked in av.libs / pillow.libs).
 missing=()
-for pkg in python3-venv libportaudio2; do
+for pkg in python3-venv libportaudio2 gcc libc6-dev; do
     dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || missing+=("$pkg")
 done
 if (( ${#missing[@]} )); then
@@ -110,6 +111,15 @@ if [[ "$(cat .venv/.requirements.sha256 2>/dev/null || true)" != "$want" ]]; the
     echo "Installing Python packages (needs internet)"
     .venv/bin/python -m pip install --disable-pip-version-check --no-input -r requirements.txt
     echo "$want" > .venv/.requirements.sha256
+fi
+
+# The LED output's transmit loop in C (trafficlight/output/hub75/native.c): without it the Python loop
+# runs, which holds a Pi 4 near 28 frames a second.
+native=trafficlight/output/hub75
+if cc -O2 -Wall -shared -fPIC -o "$native/_native-$(uname -m).so" "$native/native.c"; then
+    echo "Built the C transmit loop"
+else
+    echo "WARNING: the C transmit loop did not build; the slower Python loop will be used." >&2
 fi
 
 if [[ ! -f web/dist/index.html ]]; then
