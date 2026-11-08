@@ -246,27 +246,44 @@ def create_app(data_dir: Optional[Path] = None, *, store: Optional[Store] = None
             "Content-Disposition": f"attachment; filename=\"{plan.filename}\"; filename*=UTF-8''{quoted}"})
 
     @app.post("/api/bundle")
-    def upload_bundle(file: UploadFile = File(...), replace: bool = Form(True)) -> dict:
+    async def upload_bundle(request: Request, replace: bool = Query(True)) -> dict:
+        """The zip is the request body, written to the data disk as it arrives. Not a multipart form: the
+        framework buffers a form's files in /tmp before the handler runs, and a show with its videos is
+        gigabytes; /tmp is a RAM disk on Raspberry Pi OS (a 5.8 GB bundle failed there with a 400)."""
+        free = shutil.disk_usage(data_dir).free
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > free - BUNDLE_SPARE_BYTES:
+            raise HTTPException(507, f"Not enough disk space: the bundle is {int(length) / 1e9:.1f} GB, "
+                                     f"{max(0, free - BUNDLE_SPARE_BYTES) / 1e9:.1f} GB are free")
         tmp_dir = data_dir / "tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp = tmp_dir / f"{uuid.uuid4().hex}.zip"
         try:
             with open(tmp, "wb") as f:
-                shutil.copyfileobj(file.file, f, 1 << 20)
-            try:
-                need = bundle.needed_bytes(tmp)
-            except (zipfile.BadZipFile, OSError):
-                raise HTTPException(415, "This is not a zip file")
-            free = shutil.disk_usage(data_dir).free
-            if need > free - BUNDLE_SPARE_BYTES:
-                raise HTTPException(507, f"Not enough disk space: the bundle needs {need / 1e9:.1f} GB, "
-                                         f"{max(0, free - BUNDLE_SPARE_BYTES) / 1e9:.1f} GB are free")
-            try:
-                return bundle.import_bundle(store, media, tmp, replace).to_json()
-            except bundle.BundleError as e:
-                raise HTTPException(415, str(e))
+                pending = bytearray()
+                async for chunk in request.stream():
+                    pending += chunk
+                    if len(pending) >= 1 << 22:           # the disk write off the event loop, 4 MB at a time
+                        await run_in_threadpool(f.write, bytes(pending))
+                        pending.clear()
+                await run_in_threadpool(f.write, bytes(pending))
+            return await run_in_threadpool(_import_bundle, tmp, replace)
         finally:
             tmp.unlink(missing_ok=True)
+
+    def _import_bundle(tmp: Path, replace: bool) -> dict:
+        try:
+            need = bundle.needed_bytes(tmp)
+        except (zipfile.BadZipFile, OSError):
+            raise HTTPException(415, "This is not a zip file")
+        free = shutil.disk_usage(data_dir).free
+        if need > free - BUNDLE_SPARE_BYTES:
+            raise HTTPException(507, f"Not enough disk space: the bundle needs {need / 1e9:.1f} GB, "
+                                     f"{max(0, free - BUNDLE_SPARE_BYTES) / 1e9:.1f} GB are free")
+        try:
+            return bundle.import_bundle(store, media, tmp, replace).to_json()
+        except bundle.BundleError as e:
+            raise HTTPException(415, str(e))
 
     # ------------------------------------------------------------ transport
     @app.post("/api/transport/pause")

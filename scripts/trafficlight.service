@@ -18,8 +18,11 @@ NoNewPrivileges=yes
 # the card open: use Raspberry Pi OS Lite, see README.)
 SupplementaryGroups=audio
 # /var/lib/trafficlight, owned by the service user, kept across updates of the code.
-StateDirectory=trafficlight
+StateDirectory=trafficlight trafficlight/tmp
 Environment=TRAFFICLIGHT_DATA=/var/lib/trafficlight
+# Temporary files (uploads in progress, downloads) on the data disk: /tmp is a RAM disk on Raspberry
+# Pi OS, half the memory, and a video upload is spooled there whole before the server sees it.
+Environment=TMPDIR=/var/lib/trafficlight/tmp
 Environment=PYTHONUNBUFFERED=1
 # Options of the LED card driver that are not settings (trafficlight/output/fpga.py, FpgaOptions):
 #Environment=TRAFFICLIGHT_FPGA=burst=4,gap_us=300

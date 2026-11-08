@@ -61,9 +61,12 @@ def download(client, **query) -> bytes:
     return r.content
 
 
+ZIP = {"Content-Type": "application/zip"}
+
+
 def upload(client, data: bytes, replace: bool = True) -> dict:
-    r = client.post("/api/bundle", files={"file": ("bundle.zip", data, "application/zip")},
-                    data={"replace": "true" if replace else "false"})
+    r = client.post("/api/bundle", params={"replace": "true" if replace else "false"}, content=data,
+                    headers={"Content-Type": "application/zip"})
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -163,17 +166,28 @@ def test_bad_uploads_and_requests(two, tmp_path):
     assert a.get("/api/bundle").status_code == 422                      # kind=sets needs a set
     assert a.get("/api/bundle", params={"kind": "nope"}).status_code == 422
     assert a.get("/api/bundle", params={"set": "missing"}).status_code == 404
-    r = b.post("/api/bundle", files={"file": ("x.zip", b"not a zip", "application/zip")})
+    r = b.post("/api/bundle", content=b"not a zip", headers=ZIP)
     assert r.status_code == 415
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("hello.txt", "hi")
-    assert b.post("/api/bundle", files={"file": ("x.zip", buf.getvalue(), "application/zip")}).status_code == 415
+    assert b.post("/api/bundle", content=buf.getvalue(), headers=ZIP).status_code == 415
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr(MANIFEST, json.dumps({"format": 99}))
-    r = b.post("/api/bundle", files={"file": ("x.zip", buf.getvalue(), "application/zip")})
+    r = b.post("/api/bundle", content=buf.getvalue(), headers=ZIP)
     assert r.status_code == 415 and "newer" in r.json()["detail"]
+
+
+def test_a_bundle_bigger_than_the_free_space_is_refused_before_it_is_read(two, monkeypatch, tmp_path):
+    """The declared length is checked first: a show of several GB must not be uploaded only to be refused."""
+    a, b = two
+    import trafficlight.server.app as appmod
+    real = appmod.shutil.disk_usage
+    monkeypatch.setattr(appmod.shutil, "disk_usage", lambda p: real(p)._replace(free=appmod.BUNDLE_SPARE_BYTES + 1000))
+    r = b.post("/api/bundle", content=b"x" * 5000, headers=ZIP)
+    assert r.status_code == 507 and "5000" not in r.json()["detail"] and "GB" in r.json()["detail"]
+    assert not list((tmp_path / "sbc").rglob("*.zip"))                   # nothing was written
 
 
 def test_files_outside_an_item_are_refused(two, tmp_path):

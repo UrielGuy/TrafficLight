@@ -59,17 +59,22 @@ do it at home, not on the playa.
    It asks for the hotspot's password at the start, then builds the UI, copies everything,
    installs (about 4 minutes on a Pi 4, mostly downloads), and prints where the UI is:
    `http://<name>.local:8080`. `--hostname NAME` renames the Pi if Imager did not.
-5. Plug the LED card into the Pi's network socket. **Settings → Setup** in the UI should show the
+5. In Settings, set the **frame rate to 30**: a Raspberry Pi 4 keeps 30 fps with video and tops out
+   near 28 above that (the PC's default is 60). The panels still refresh at over a thousand times a
+   second; this is how often the picture changes.
+6. Plug the LED card into the Pi's network socket. **Settings → Setup** in the UI should show the
    network port, then "Found card 10.75.c.d".
-6. Move the show: on the PC's UI, Dashboard → **Download everything**; on the Pi's UI, **Upload…**
-   that zip (sets, media and show settings).
+7. Move the show: on the PC's UI, Dashboard → **Download everything**; on the Pi's UI, **Upload…**
+   that zip (sets, media and show settings). A show with its videos is gigabytes: over a weak Wi-Fi
+   link that takes hours (the Pi here managed 3-4 Mbit/s), so do it with the Pi next to the router.
 
 What `scripts/install_pi.sh` sets up on the Pi (all safe to repeat; updates keep it):
 
 * apt packages (`python3-venv`, `libportaudio2`), the venv and Python packages, the
   `trafficlight` systemd service (starts at boot, restarts on failure, runs as your user without
   any capabilities, with the `audio` group), logs in RAM only (journald `Storage=volatile`, to
-  spare the SD card), UDP socket buffers big enough for the LED driver.
+  spare the SD card), UDP socket buffers big enough for the LED driver, temporary files on the data
+  disk (`/tmp` is a RAM disk), Wi-Fi power saving off.
 * **The LED card's port**: `eth0` gets 10.75.0.1/16 (NetworkManager profile `trafficlight-sign`,
   no gateway, so the default route stays on Wi-Fi; `docs/HARDWARE.md` section 4). If your ssh
   session runs over `eth0`, the profile takes over at the next reboot instead of cutting you off,

@@ -187,6 +187,14 @@ if [[ -n $sign_port || -n $hotspot ]] && ! nm_running; then
 fi
 came_in="$(session_dev)"
 
+# Wi-Fi power saving makes the Pi's Wi-Fi slow and laggy (seen: 13 Mbit/s, a show upload at 3 Mbit/s);
+# the sign is on mains power. The setting applies when a Wi-Fi connection starts; iw switches it off now
+# without dropping the link this session may run over.
+if nm_running && install_file $'# TrafficLight: no Wi-Fi power saving (throughput and lag).\n[connection]\nwifi.powersave = 2' \
+        /etc/NetworkManager/conf.d/90-trafficlight-wifi.conf; then
+    [[ ! -e /sys/class/net/wlan0 ]] || sudo /usr/sbin/iw dev wlan0 set power_save off 2>/dev/null || true
+fi
+
 if [[ -n $sign_port ]]; then
     if [[ ! -e /sys/class/net/$sign_port ]]; then
         echo "WARNING: there is no network port $sign_port; the sign's port is not set up (--sign-port)." >&2

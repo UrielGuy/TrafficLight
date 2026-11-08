@@ -112,10 +112,12 @@ export const renderUrl = (setId: string, t = 0, rev?: number) =>
   `/api/render.png?set=${enc(setId)}&t=${t}${rev ? `&v=${rev}` : ''}`;
 
 /** A POST of form data that reports the upload's progress (fetch cannot). */
-function postWithProgress<T>(url: string, fd: FormData, onProgress: (fraction: number) => void): Promise<T> {
+/** POST a form, or a file as the raw body (sent with its own content type, streamed from disk). */
+function postWithProgress<T>(url: string, body: FormData | Blob, onProgress: (fraction: number) => void): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', url);
+    if (body instanceof Blob) xhr.setRequestHeader('Content-Type', body.type || 'application/zip');
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onerror = () => reject(new ApiError(0, 'Cannot reach the server'));
     xhr.onload = () => {
@@ -128,7 +130,7 @@ function postWithProgress<T>(url: string, fd: FormData, onProgress: (fraction: n
       if (xhr.status >= 200 && xhr.status < 300) resolve(body as T);
       else reject(new ApiError(xhr.status, detailText(body?.detail, `${xhr.status} ${xhr.statusText}`), body?.detail));
     };
-    xhr.send(fd);
+    xhr.send(body);
   });
 }
 
@@ -146,8 +148,6 @@ export const bundleUrl = (b: BundleKind) =>
 
 /** `replace`: sets and media already here are updated from the bundle; else kept (sets: the bundle's next to them). */
 export function uploadBundle(file: File, replace: boolean, onProgress: (fraction: number) => void): Promise<BundleResult> {
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('replace', replace ? 'true' : 'false');
-  return postWithProgress<BundleResult>('/api/bundle', fd, onProgress);
+  // The zip is the body itself, not a form: the server writes it straight to disk (a show is gigabytes).
+  return postWithProgress<BundleResult>(`/api/bundle?replace=${replace}`, file, onProgress);
 }
